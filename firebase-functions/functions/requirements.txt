@@ -1,0 +1,10 @@
+firebase_functions~=0.1.0
+fastapi[all]
+firebase_admin
+python-dotenv
+google_auth_oauthlib
+requests
+html2text
+langchain_core
+langchain_openai
+slack-sdk

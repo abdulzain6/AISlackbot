@@ -1,0 +1,15 @@
+slack_bolt
+python-dotenv
+extractous
+langchain
+langchain-google-firestore
+langchain-google-vertexai
+youtube_transcript_api
+firebase_admin
+langchain_openai
+Beautifulsoup4
+google-auth-oauthlib
+pytz
+notion-client
+markdown2
+schedule
