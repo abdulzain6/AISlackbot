@@ -8,6 +8,7 @@ from typing import List, Optional
 from datetime import datetime
 from langchain.tools import tool
 
+
 class GoogleCalendarManager:
     def __init__(
         self,
@@ -119,6 +120,8 @@ class GoogleCalendarManager:
         except Exception as e:
             logging.error(f"Failed to list events: {str(e)}")
             raise
+
+
 
 def create_ai_tools_for_calendar(    
     token_storage: FirebaseOAuthStorage,

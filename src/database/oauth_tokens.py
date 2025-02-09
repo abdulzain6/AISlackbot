@@ -1,7 +1,4 @@
-import firebase_admin
-from firebase_admin import credentials
 from firebase_admin import firestore
-from datetime import datetime
 from typing import Optional
 from pydantic import BaseModel
 
@@ -13,11 +10,9 @@ class OAuthTokens(BaseModel):
     refresh_token: str
     expires_at: float
 
+
 class FirebaseOAuthStorage:
-    def __init__(self, credentials_path: str = None):
-        if not firebase_admin._apps:
-            cred = credentials.Certificate(credentials_path)
-            firebase_admin.initialize_app(cred)
+    def __init__(self):
         self.db: firestore.Client = firestore.client()
 
     def _make_key(self, user_id: str, team_id: str, integration_type: str) -> str:

@@ -32,12 +32,9 @@ class UserFile(BaseModel):
 
 
 class FirebaseFileHandler:
-    def __init__(self, storage_bucket_name: str, knowledge_manager: KnowledgeManager):
-        if not firebase_admin._apps:
-            app = firebase_admin.initialize_app()
-        
+    def __init__(self, knowledge_manager: KnowledgeManager):
         self.knowledge_manager = knowledge_manager
-        self.bucket = storage.bucket(storage_bucket_name)
+        self.bucket = storage.bucket()
         self.collection = firestore.client().collection('user_files')
 
     def create_user_file(self, user_file: UserFile, file_data: bytes) -> str:

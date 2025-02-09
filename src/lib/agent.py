@@ -1,141 +1,196 @@
 from datetime import datetime
-
-from typing import Optional
-from io import BytesIO
-from langchain.schema import BaseMessage
+from typing import Callable, Optional
+from langchain.schema import SystemMessage, HumanMessage
 from langchain.chat_models.base import BaseChatModel
-from langchain.prompts.chat import ChatPromptTemplate
-from langchain.agents import AgentExecutor, create_tool_calling_agent
-from ..database.oauth_tokens import FirebaseOAuthStorage
+from langgraph.prebuilt import create_react_agent
+from langchain_core.tools import Tool, tool
+from pydantic import BaseModel
 
-from ..lib.integrations.google.meets import create_ai_tools_for_meets
-from ..lib.integrations.google.calendar import create_ai_tools_for_calendar
-from ..lib.integrations.google.gmail import create_ai_tools_for_gmail, GmailHandler
+import uuid
+import time
+import threading
+import logging
 
-from .integrations.google.google_oauth import GoogleOAuth
-from ..database.user_files import FirebaseFileHandler
-from ..database.lists import FirebaseListService
-from ..database.users import User, FirestoreUserStorage
-from ..database.gmail_watch_requests import WatchRequestStorage
-from .knowledge_manager import KnowledgeManager
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-class AIAgent:
+
+class WorkerAIAgent:
     def __init__(
         self,
-        knowledge_manager: KnowledgeManager,
         llm: BaseChatModel,
-        firebase_file_handler: FirebaseFileHandler,
-        list_handler: FirebaseListService,
-        google_oauth: GoogleOAuth,
-        token_storage: FirebaseOAuthStorage,
-        user_storage: FirestoreUserStorage,
-        watch_request_storage: WatchRequestStorage,
-        google_client_id: str,
-        google_client_secret: str,
-        team_id: str,
-        user_id: str,
-        topic_name_gmail: str,
-        user_name: str = None,
-        prompt: ChatPromptTemplate = None
+        tools: Optional[list[Tool]] = None,
+        additional_info: str = "",
     ) -> None:
-        self.token_storage = token_storage
-        self.google_client_id = google_client_id
-        self.google_client_secret = google_client_secret
-        self.knowledge_manager = knowledge_manager
         self.llm = llm
-        self.firebase_file_handler = firebase_file_handler
-        self.list_handler = list_handler
-        self.prompt = prompt
-        self.team_id = team_id
-        self.user_id = user_id
-        self.google_oauth = google_oauth
+        self.tools = tools or []
+        self.additional_info = additional_info
 
-        if not user_storage.get_user(team_name=team_id, user_id=user_id):
-            user_storage.upsert_user(
-                User(
-                    user_id=user_id,
-                    team_name=team_id,
-                    associated_google_email=None,
-                    user_name=user_name
-                )
-            )
-        
-        if not watch_request_storage.get_expiry_for_user(user_id=user_id, team_id=team_id):
-            try:
-                gmail_handler = GmailHandler(
-                    token_storage=self.token_storage,
-                    client_id=self.google_client_id,
-                    client_secret=self.google_client_secret,
-                    user_id=self.user_id,
-                    team_id=self.team_id
-                )
-                data = gmail_handler.send_watch_request(topic_name_gmail)
-                watch_request_storage.update_expiration(user_id, team_id, topic_name_gmail, data["expiration"])
-            except Exception as e:
-                pass
+    def make_system_prompt(self) -> str:
+        day_info = (
+            f"Today is {datetime.utcnow().strftime('%A, %B %d, %Y %I:%M %p UTC')}"
+        )
+        return f"""You are an AI worker developed to assist slack team members and help with productivity.
 
-        if not prompt:
-            self.prompt = ChatPromptTemplate([
-                ("system", """You are SlackAI, An AI assistant developed to assist slack team members and help with productivity.
-    There are many functions which you can perform to help the users.
-    1. Answer questions from the user files/links.
-    You can read user data to answer questions from them (RAG).
-    User data can be user files or team files (accessible to other team members aswell).
-    Data can be links or documents. Data must be ingested first before it can be used.
-    2. You can also create lists for the user, They can also be private or accessible to other team members. Lists can be of anything... websites, github repos etc.
-    You can use then find relavent information from these lists if asked to. Dont add to the list unless confirmed by the user to.
-        
-    User currently has the following data in the knowledgebase:
-    {files}
-    =================
-    User has the following lists saved:
-    {lists}
-    =================
-    Additional Notes:
-    {day_info}
-    All dates are in UTC the tools also expect utc.
-    Avoid mentioning techical information like IDs. Use simple language, so simple that even a child understands (important)
-    Avoid giving raw information. Try to properly format it so its readable.
-    Be as useful as possible use your tools to full extent to make yourself useful.
-    If youre sending an email don't add placeholders to it, it leaves a bad impression. simply reword the message or as the user more info. 
-    If youre replying to an email, make sure to read the conversation before replying to get context
-                 """),
-                ("placeholder", "{chat_history}"),
-                ("human", "{input}"),
-                ("placeholder", "{agent_scratchpad}"),
-            ])
+When you respond to the team members, use phrases like 'I have finished work on the task ....' or 'I have completed this task and i ...' to indicate that you have finished working on a task. 
+If you are unable to complete a task, say 'I am unable to complete this task because ...' and explain why you are unable to complete the task.
+Additional Notes:
+{day_info}
+{self.additional_info}
+All dates are in UTC the tools also expect utc.
+Avoid mentioning techical information like IDs. Use simple language, so simple that even a child understands (important)
+Avoid giving raw information. Try to properly format it so its readable.
+Be as useful as possible use your tools to full extent to make yourself useful.
+"""
 
+    def chat(
+        self,
+        message: str,
+        tools: list[Tool],
+        send_message_callback: Callable[[str], None] = None,
+    ) -> None:
 
-    def chat(self, message: str, file: Optional[BytesIO] = None, chat_history: list[BaseMessage] = []):
-        file_tools = self.firebase_file_handler.create_ai_tools(user_id=self.user_id, team_id=self.team_id, file=file)
-        google_services = [
-            ('meets', create_ai_tools_for_meets),
-            ('calendar', create_ai_tools_for_calendar),
-            ('gmail', create_ai_tools_for_gmail)
-        ]
-
-        google_tools = []
-        for service, create_tools_func in google_services:
-            tools = create_tools_func(
-                token_storage=self.token_storage,
-                client_id=self.google_client_id,
-                client_secret=self.google_client_secret,
-                user_id=self.user_id,
-                team_id=self.team_id
-            )
-            google_tools.extend(tools)
-
-        google_oauth_tools = self.google_oauth.create_ai_tools(user_id=self.user_id, team_id=self.team_id)
-        tools = [*file_tools, *google_oauth_tools, *self.list_handler.create_ai_tools(team_id=self.team_id, user_id=self.user_id), *google_tools]
-        agent = create_tool_calling_agent(self.llm, tools, self.prompt)
-        agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
-        return agent_executor.invoke(
+        agent = create_react_agent(
+            model=self.llm,
+            tools=tools + self.tools,
+            debug=True
+        )
+        response: str = agent.invoke(
             {
-                "input": message,
-                "chat_history" : chat_history,
-                "files" : self.firebase_file_handler.list_accessbile_files(self.user_id, self.team_id),
-                "lists" : self.list_handler.get_lists(self.user_id, self.team_id),
-                "day_info" : f"Today is {datetime.utcnow().strftime('%A, %B %d, %Y %I:%M %p UTC')}"
+                "messages": [
+                    {"role": "system", "content": self.make_system_prompt()},
+                    {"role": "user", "content": message},
+                ]
             }
-        )["output"]
+        )["messages"][-1].content
+        send_message_callback(response)
 
+
+class OrchestratorAgent:
+    def __init__(
+        self,
+        llm: BaseChatModel,
+        worker_tools: list[Tool],
+        worker_llm: BaseChatModel,
+        disable_checker: bool = False,
+        worker_message_callback: Callable[[str], None] = print,
+        additional_info: str = "",
+        worker_additional_info: str = "",
+    ):
+        self.disable_checker = disable_checker
+        self.llm = llm
+        self.worker_tools = worker_tools
+        self.additional_info = additional_info
+        self.worker_additonal_info = worker_additional_info
+        self.worker_llm = worker_llm
+        self.worker_message_callback = worker_message_callback
+
+    def make_system_prompt(self) -> str:
+        day_info = (
+            f"Today is {datetime.utcnow().strftime('%A, %B %d, %Y %I:%M %p UTC')}"
+        )
+        return f"""You are SlackAI, an AI developed to assist Slack team members and enhance productivity.
+Use concise phrases like 'I have started work on XYZ', 'I am still working on task XYZ', or 'I have finished task XYZ' when updating team members.
+Be vigilant and attentive to all channel and group messages, but primarily respond when directly addressed or when your input can offer clear value.
+Note that conversations might be internal; offer help if it seems beneficial or requested.
+You can use your tools to perform tasks; they are capable of handling a wide range of activities.
+
+Consider confirming significant actions, but exercise judgment based on the context and task urgency.
+Additional Notes:
+{day_info}
+{self.additional_info}
+All dates are in UTC, and tools also expect UTC.
+Refrain from mentioning technical information like IDs. Maintain simple language that even a child can understand (essential).
+
+Tools you can use:
+{self.worker_tools}
+"""
+
+    def run(self, conversation: list[str]) -> str | None:
+        convo_string = "\n".join(conversation)
+
+        if not self.disable_checker:
+
+            class Output(BaseModel):
+                reply_to_team: bool
+                reason_to_reply: str
+
+            checker_llm = self.llm.with_structured_output(Output)
+            output = checker_llm.invoke(
+                [
+                    SystemMessage(
+                        content="""You are to decide whether to reply to the team based on the conversation.
+    Only reply to the team if the conversation is directed at you or you have tools that you can use to help the team.
+    Dont be spammy, only reply if you have something useful to say. 
+    If you are unsure, dont reply.
+    Look at the last few messages only.
+    """
+                    ),
+                    HumanMessage(
+                        content=f"""Conversation: {convo_string}
+    Available tools: {self.worker_tools}
+    """
+                    ),
+                ]
+            )
+
+            print(output)
+            if not output.reply_to_team:
+                return None
+
+        agent = create_react_agent(
+            model=self.llm.with_config(config={"tool_choice" : "required"}),
+            tools=self.make_tools(),
+        )
+        response: str = agent.invoke(
+            {
+                "messages": [
+                    {"role": "system", "content": self.make_system_prompt()},
+                    {
+                        "role": "user",
+                        "content": f"Conversation between team:\n {convo_string}",
+                    },
+                ]
+            }
+        )["messages"][-1].content
+
+        return response
+
+
+    def make_tools(self) -> list[Tool]:
+        logger.info("Initializing WorkerAIAgent with provided LLM and tools")
+        worker = WorkerAIAgent(
+            self.worker_llm, self.worker_tools, self.worker_additonal_info
+        )
+
+        @tool
+        def use_tool(
+            task_name: str, task_detail: str, user_confirmed: bool = False
+        ) -> str:
+            "Used to perform any task, You must provide in long detail description on what needs to be done. Also pass in if user has confirmed or not"
+            
+            logger.info("use_tool called with task_name: %s, user_confirmed: %s Task Detail: %s", task_name, user_confirmed, task_detail)
+            if not user_confirmed:
+                logger.warning("User confirmation required for task: %s", task_name)
+                return "User confirmation required, ask confirmation and retry if user already confirmed pass user_Confirmed true"
+
+            task_id = str(uuid.uuid4())
+            logger.info("Generated task ID: %s for task: %s", task_id, task_name)
+
+            def perform_task():
+                logger.info("Starting task execution for task: %s", task_name)
+                time.sleep(4)
+                logger.info("Task Name: %s\nTask Details: %s", task_name, task_detail)
+                worker.chat(
+                    f"Task name: {task_name} Task Detail: {task_detail}",
+                    tools=[],
+                    send_message_callback=self.worker_message_callback,
+                )
+                logger.info("Task execution completed for task: %s", task_name)
+
+            task_thread = threading.Thread(target=perform_task)
+            task_thread.start()
+            logger.info("Task in progress for task: %s. You will be notified when it is complete.", task_name)
+            return f"Task in progress.... You will be notified when it is complete."
+
+        return [use_tool]

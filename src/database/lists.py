@@ -1,7 +1,6 @@
-from typing import Optional, List as PyList, Dict, Tuple
+from typing import Optional, List as PyList, Tuple
 from firebase_admin import firestore
 from pydantic import BaseModel
-import firebase_admin
 from langchain.tools import tool
 
 
@@ -16,11 +15,10 @@ class List(BaseModel):
 class ListWithId(List):
     doc_id: str
 
+
 class FirebaseListService:
-    def __init__(self):
-        if not firebase_admin._apps:
-            app = firebase_admin.initialize_app()
-            
+    def __init__(self, mode: str = "slack"):
+        self.mode = mode 
         self.db = firestore.client()
         self.collection = self.db.collection('lists')
 
@@ -171,7 +169,7 @@ class FirebaseListService:
             return True, item
         except IndexError:
             return False, None
-        
+
     def create_ai_tools(self, team_id: str, user_id: str):
         @tool
         def add_to_list(item: str, list_id: str):

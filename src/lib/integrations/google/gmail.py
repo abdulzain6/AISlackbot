@@ -11,6 +11,7 @@ from googleapiclient.discovery import build
 from langchain.tools import tool
 from ....database.oauth_tokens import FirebaseOAuthStorage, OAuthTokens
 
+
 class GmailHandler:
     def __init__(
         self,
@@ -351,6 +352,8 @@ class GmailHandler:
         except Exception as e:
             print(f"Error sending watch request: {str(e)}")
             return None
+
+
 
 def create_ai_tools_for_gmail(    
     token_storage: FirebaseOAuthStorage,

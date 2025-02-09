@@ -1,4 +1,3 @@
-import firebase_admin
 from pydantic import BaseModel
 from google.cloud import firestore
 from typing import Optional
@@ -9,10 +8,9 @@ class User(BaseModel):
     associated_google_email: Optional[str] = None
     user_name: Optional[str] = None
 
+
 class FirestoreUserStorage:
     def __init__(self):
-        if not firebase_admin._apps:
-            app = firebase_admin.initialize_app()
         self.db = firestore.Client()
         self.collection = self.db.collection('users')
 

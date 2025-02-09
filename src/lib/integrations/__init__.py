@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Optional
 
+
 class OAuthBase(ABC):
     @abstractmethod
     def generate_oauth_link(self, state: Optional[Dict[str, str]] = None) -> str:

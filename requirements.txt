@@ -13,3 +13,7 @@ pytz
 notion-client
 markdown2
 schedule
+duckduckgo_search
+langgraph
+markdown_pdf
+html2text

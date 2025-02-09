@@ -1,13 +1,12 @@
 import firebase_admin
-from firebase_admin import credentials, firestore
+from firebase_admin import firestore
 from datetime import datetime, timedelta
 from typing import Optional, List, Tuple, Dict, Any
 
+
+
 class WatchRequestStorage:
     def __init__(self) -> None:
-        if not firebase_admin._apps:
-            app = firebase_admin.initialize_app()
-    
         self.db: firestore.Client = firestore.client()
 
     def update_expiration(self, user_id: str, team_id: str, topic_name: str, expiration_millis: float) -> None:
