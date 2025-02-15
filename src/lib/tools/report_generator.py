@@ -8,18 +8,30 @@ from pydantic import BaseModel, Field
 from langchain_core.tools import tool, Tool
 from .tool_maker import ToolMaker
 from ..data_store import FirebaseStorageHandler
-
+from .serializeable_llm import LLMConfig, initialize_llm
 
 
 class Report(BaseModel):
-    report_markdown: str = Field(..., description="The markdown content of the report. Must have no errors.")
-    report_css: str = Field(..., description="The CSS content of the report. Must have no errors.")
+    report_markdown: str = Field(
+        ..., description="The markdown content of the report. Must have no errors."
+    )
+    report_css: str = Field(
+        ..., description="The CSS content of the report. Must have no errors."
+    )
+
 
 class ReportGenerator(ToolMaker):
-    def __init__(self, llm: BaseChatModel, storage: FirebaseStorageHandler, storage_prefix: str):
+    def __init__(
+        self, llm_conf: LLMConfig, storage_prefix: str, storage: FirebaseStorageHandler = None
+    ):
         self.storage_prefix = storage_prefix
+        llm = initialize_llm(llm_conf)
         self.llm = llm.with_structured_output(Report)
+        if not storage:
+            storage = FirebaseStorageHandler()
+
         self.storage = storage
+
 
     def generate_report(self, data: str) -> Report:
         prompt = [
@@ -31,18 +43,13 @@ The report must be well designed. The report must be well presented.
 Cover all details and do not miss anything
 Use easy to understand language and avoid making it too long."""
             ),
-            HumanMessage(content=f"Make a report on the following data:\n {data}")
+            HumanMessage(content=f"Make a report on the following data:\n {data}"),
         ]
         return self.llm.invoke(prompt)
 
     def report_to_pdf(self, report: Report) -> str:
         pdf = MarkdownPdf(toc_level=3)
-        pdf.add_section(
-            Section(
-                report.report_markdown
-            ),
-            user_css=report.report_css
-        )
+        pdf.add_section(Section(report.report_markdown), user_css=report.report_css)
 
         # Save to a temporary file
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
@@ -50,7 +57,9 @@ Use easy to understand language and avoid making it too long."""
             pdf.save(temp_path)
         # Upload to the storage and get the link
         try:
-            link = self.storage.upload_file(temp_path, self.storage_prefix + f"{uuid.uuid4()}.pdf")
+            link = self.storage.upload_file(
+                temp_path, self.storage_prefix + f"{uuid.uuid4()}.pdf"
+            )
         finally:
             os.remove(temp_path)  # Clean up the temporary file
 
@@ -58,9 +67,15 @@ Use easy to understand language and avoid making it too long."""
 
     def create_ai_tools(self) -> list[Tool]:
         @tool
-        def generate_report(report_topic: str, key_findings: str, further_details: str,
-                            executive_summary: str, conclusions: str, recommendations: str,
-                            appendix: str) -> str:
+        def generate_report(
+            report_topic: str,
+            key_findings: str,
+            further_details: str,
+            executive_summary: str,
+            conclusions: str,
+            recommendations: str,
+            appendix: str,
+        ) -> str:
             """Generate a comprehensive report based on the provided unstructured research data.
             Ensure to include all relevant details without omission. Pass in all gathered data such as
             an executive summary, conclusions, recommendations, and any appendices."""
@@ -89,10 +104,12 @@ def main():
     from langchain_openai import ChatOpenAI
 
     llm = ChatOpenAI(model="gpt-4o")
-    
+
     storage = FirebaseStorageHandler()  # Replace with actual initialization
 
-    report_generator = ReportGenerator(llm=llm, storage=storage, storage_prefix="test/reports/")
+    report_generator = ReportGenerator(
+        llm=llm, storage=storage, storage_prefix="test/reports/"
+    )
 
     # Sample data for report generation
     sample_data = "Make report on tesla stock"
@@ -101,6 +118,7 @@ def main():
     # Create PDF and upload
     storage_link = report_generator.report_to_pdf(report)
     print(f"Report uploaded to: {storage_link}")
+
 
 # This block prevents `main` from running if the script is imported
 if __name__ == "__main__":

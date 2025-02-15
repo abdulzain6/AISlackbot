@@ -13,7 +13,9 @@ pytz
 notion-client
 markdown2
 schedule
+redis
 duckduckgo_search
 langgraph
 markdown_pdf
 html2text
+celery

@@ -1,24 +1,30 @@
-from slack_sdk.web import WebClient
-from slack_sdk.errors import SlackApiError
-from typing import List, Optional
-import logging
+from .lib.integrations.google.gmail import GmailHandler
+from .database.oauth_tokens import FirebaseOAuthStorage
+from .database.gmail_watch_requests import WatchRequestStorage
+import os
 
+def check_and_renew_watch_requests():
+    storage = WatchRequestStorage()
+    soon_to_expire_topics = storage.get_soon_to_expire_topics(hours_until_expiration=1)
 
-def get_chat_history(client: WebClient, channel_id: str, limit: int = 10) -> Optional[List[dict]]:
-    """Retrieve the chat history for a specified channel with error handling"""
-    logging.info(f"Fetching chat history for channel {channel_id}")
-    try:
-        response = client.conversations_history(
-            channel=channel_id,
-            limit=limit
+    for doc_id, data in soon_to_expire_topics:
+        user_id, team_id = doc_id.split("_")
+        topic_name = data["topic_name"]
+        print(
+            f"Renewing watch request for user: {user_id}, team: {team_id}, topic: {topic_name}"
         )
-        messages: List[dict] = response["messages"]
-        logging.info(f"Successfully retrieved {len(messages)} messages from history")
-        return messages
-    
-    except SlackApiError as e:
-        logging.error(f"Error fetching chat history: {e.response['error']}")
-        return None
-    except Exception as e:
-        logging.error(f"Unexpected error in get_chat_history: {str(e)}", exc_info=True)
-        return None
+        watcher = GmailHandler(
+            token_storage=FirebaseOAuthStorage("creds.json"),
+            client_id=os.getenv("GOOGLE_CLIENT_ID"),
+            client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
+            user_id=user_id,
+            team_id=team_id,
+        )
+        data = watcher.send_watch_request(user_id, team_id, topic_name)
+        storage.update_expiration(
+            user_id=user_id,
+            team_id=team_id,
+            topic_name=topic_name,
+            expiration_millis=data["expiration"],
+        )
+

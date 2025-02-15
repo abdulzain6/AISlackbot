@@ -1,7 +1,6 @@
 import itertools
 import os
 import tempfile
-import firebase_admin
 import logging
 import hashlib
 
