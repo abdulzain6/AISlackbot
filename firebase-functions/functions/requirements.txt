@@ -8,3 +8,5 @@ html2text
 langchain_core
 langchain_openai
 slack-sdk
+authlib
+slack_bolt

@@ -1,3 +1,4 @@
+from datetime import datetime
 from langchain_openai import ChatOpenAI
 from ..lib.tools import get_all_tools
 from ..lib.platforms import SendMessageConfig, send_message, Platform
@@ -36,17 +37,21 @@ def perform_task(
         llm = ChatOpenAI(model=worker_config["worker_llm_config"]["model"])
         addtional_info = worker_config["worker_additional_info"]
 
-        worker_agent = WorkerAIAgent(tools=tools, llm=llm, additional_info=addtional_info)
+        worker_agent = WorkerAIAgent(
+            tools=tools, llm=llm, additional_info=addtional_info
+        )
         logger.info("Starting task execution for task: %s", task_name)
         logger.info("Task Name: %s\nTask Details: %s", task_name, task_detail)
 
         FirebaseUserTasks().create_task(
             Task(
-                team_id=user.app_team_name,
+                team_id=user.app_team_id,
                 task_name=task_name,
                 task_detail=task_detail,
+                app_name=platform.value.lower(),
                 status=TaskStatus.IN_PROGRESS,
                 task_id=task_id,
+                time_created=datetime.utcnow(),
             )
         )
         output = worker_agent.chat(
@@ -54,9 +59,15 @@ def perform_task(
             tools=[],
         )
         send_message(config=send_message_config, platform=platform, message=output)
-        FirebaseUserTasks().update_task_status(task_id, TaskStatus.COMPLETED)
+        FirebaseUserTasks().update_task_status(
+            user.app_team_id, platform.value.lower(), task_id, TaskStatus.COMPLETED
+        )
         logger.info("Task execution completed for task: %s", task_name)
     except Exception as e:
-        if FirebaseUserTasks().read_task(task_id):
-            FirebaseUserTasks().update_task_status(task_id, TaskStatus.FAILED)
+        if FirebaseUserTasks().read_task(
+            user.app_team_id, platform.value.lower(), task_id
+        ):
+            FirebaseUserTasks().update_task_status(
+                user.app_team_id, platform.value.lower(), task_id, TaskStatus.FAILED
+            )
         logger.error("Task execution failed for task: %s due to %s", task_name, e)

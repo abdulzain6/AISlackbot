@@ -111,8 +111,3 @@ class SlackBot:
             print(f"Error: {e.response['error']}")
 
         return workspaces_users
-
-
-if __name__ == "__main__":
-    n = SlackBot("xoxb-4420512790982-8006203751219-72w8eBaM866Rh0QaY66BJ9aQ").send_direct_message(user_id="U04C4GQ0L23", message="hi", team_id="T04CCF2P8UW")
-    print(n)

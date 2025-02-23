@@ -1,6 +1,8 @@
+
 {
   "functions": [
     {
+      "runtime": "python311",
       "source": "functions",
       "pubsub": {
         "slackbotai-gamil": {

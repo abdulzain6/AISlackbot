@@ -19,3 +19,4 @@ langgraph
 markdown_pdf
 html2text
 celery
+authlib

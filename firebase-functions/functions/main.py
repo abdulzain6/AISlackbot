@@ -2,143 +2,33 @@ import base64
 import json
 import logging
 import os
-import requests
+import uuid
 import html2text
-
-
-from datetime import datetime, timedelta
-from firebase_admin import initialize_app
-from firebase_functions import https_fn
-from oauth_tokens import FirebaseOAuthStorage, OAuthTokens
-from google_integration import GoogleOAuth
-from firebase_functions import pubsub_fn
+from database.oauth_tokens import FirebaseOAuthStorage, OAuthTokens
 from google.cloud import firestore
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from users import FirestoreUserStorage, User
+from database.users import FirestoreUserStorage, User
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
+from firebase_functions import https_fn
+from firebase_functions import pubsub_fn
 from pydantic import BaseModel, Field
-from slack_handler import SlackBot
+from globals import AUTH_SECRET_KEY
+from lib.slack_handler import SlackBot
+from lib.auth import OAuthClient
+
 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-initialize_app()
 
 class RequestChatMessage(BaseModel):
     message: str
     send: bool = Field(description="Whether to send or not. (Only make true if the user has import messages)")
 
-
-def exchange_code_for_token(code: str) -> dict[str, str]:
-    """
-    Exchange authorization code for access token, refresh token, and expiration time.
-    
-    Args:
-        code (str): The authorization code received from Zoom OAuth.
-    
-    Returns:
-        Dict[str, str]: A dictionary containing 'access_token', 'refresh_token', and 'expires_at'.
-    """
-    response = requests.post(
-        "https://zoom.us/oauth/token",
-        data={
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": os.getenv("ZOOM_REDIRECT_URI"),
-        },
-        auth=(os.getenv("ZOOM_CLIENT_ID"), os.getenv("ZOOM_CLIENT_SECRET"))
-    )
-    response.raise_for_status()
-    data = response.json()
-    
-    # Calculate expiration time
-    expires_in = data.get('expires_in', 3600)  # Default to 1 hour if not provided
-    expires_at = datetime.now() + timedelta(seconds=expires_in)
-    
-    return {
-        "access_token": data["access_token"],
-        "refresh_token": data["refresh_token"],
-        "expires_at": expires_at.isoformat()
-    }
-
-@https_fn.on_request()
-def zoom_oauth_callback(request: https_fn.Request) -> https_fn.Response:
-    logger.info("Received OAuth callback request")
-    
-    if request.method != 'GET':
-        logger.warning(f"Invalid method: {request.method}")
-        return https_fn.Response(
-            json.dumps({"error": "Method not allowed"}),
-            status=405,
-            content_type="application/json"
-        )
-    
-    code = request.args.get("code")
-    state = request.args.get("state")
-    
-    if not code or not state:
-        logger.error("Missing required parameters")
-        return https_fn.Response(
-            json.dumps({"error": "Missing 'code' or 'state' in callback"}),
-            status=400,
-            content_type="application/json"
-        )
-    
-    try:
-        logger.info("Decoding state parameter")
-        decoded_state = json.loads(state)
-        
-        if "team_id" not in decoded_state or "user_id" not in decoded_state:
-            logger.error("Invalid state format")
-            return https_fn.Response(
-                json.dumps({"error": "Invalid state"}),
-                status=400,
-                content_type="application/json"
-            )
-        
-        team_id = decoded_state["team_id"]
-        user_id = decoded_state["user_id"]
-        
-        logger.info(f"Processing OAuth for user_id: {user_id}, team_id: {team_id}")
-        
-        # Exchange authorization code for tokens
-        logger.info("Exchanging code for tokens")
-        tokens = exchange_code_for_token(code)
-        
-        # Initialize token manager
-        token_manager = FirebaseOAuthStorage()
-        
-        # Save tokens
-        logger.info("Saving tokens")
-        token_manager.store_or_update_tokens(
-            OAuthTokens(
-                user_id=user_id,
-                team_id=team_id,
-                integration_type="zoom",
-                access_token=tokens["access_token"],
-                refresh_token=tokens["refresh_token"],
-                expires_at=tokens["expires_at"]
-            )
-        )
-        
-        logger.info("OAuth flow completed successfully")
-        return https_fn.Response(
-            json.dumps({"message": "OAuth flow completed successfully"}),
-            status=200,
-            content_type="application/json"
-        )
-        
-    except Exception as e:
-        logger.error(f"Error in OAuth callback: {str(e)}", exc_info=True)
-        return https_fn.Response(
-            json.dumps({"error": f"Error handling callback: {str(e)}"}),
-            status=500,
-            content_type="application/json"
-        )
-    
+   
 @https_fn.on_request()
 def google_oauth_callback(request: https_fn.Request) -> https_fn.Response:
     logger.info("Received Google OAuth callback request")
@@ -162,11 +52,26 @@ def google_oauth_callback(request: https_fn.Request) -> https_fn.Response:
             content_type="application/json"
         )
 
+    google_client = OAuthClient(
+        client_id=os.getenv("GOOGLE_CLIENT_ID"),
+        client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
+        redirect_uri=os.getenv("GOOGLE_REDIRECT_URI"),
+        auth_url="https://accounts.google.com/o/oauth2/auth",
+        token_url="https://oauth2.googleapis.com/token",
+        scope=" ".join([
+            "https://www.googleapis.com/auth/meetings.space.readonly",
+            "https://www.googleapis.com/auth/gmail.modify",
+            "https://www.googleapis.com/auth/calendar.events",
+            "https://www.googleapis.com/auth/calendar"
+        ]),
+        secret_key=AUTH_SECRET_KEY
+    )
+
     try:
         logger.info("Decoding state parameter")
-        decoded_state = json.loads(state)
+        decoded_state = google_client.decode_jwt_token(state)
 
-        if "team_id" not in decoded_state or "user_id" not in decoded_state:
+        if "team_id" not in decoded_state or "team_user_id" not in decoded_state:
             logger.error("Invalid state format")
             return https_fn.Response(
                 json.dumps({"error": "Invalid state"}),
@@ -175,42 +80,45 @@ def google_oauth_callback(request: https_fn.Request) -> https_fn.Response:
             )
 
         team_id = decoded_state["team_id"]
-        user_id = decoded_state["user_id"]
+        team_user_id = decoded_state["team_user_id"]
+        app_name = decoded_state["app_name"]
 
-        logger.info(f"Processing OAuth for user_id: {user_id}, team_id: {team_id}")
-
-        auth = GoogleOAuth(
-            os.getenv("SECRETS_FILE"),
-            os.getenv("GOOGLE_REDIRECT_URI"),
-            client_id=os.getenv("GOOGLE_CLIENT_ID"),
-            client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
-        )
-
-        # Exchange authorization code for tokens
+        logger.info(f"Processing OAuth for user_id: {team_user_id}, team_id: {team_id}")
         logger.info("Exchanging code for tokens")
-        tokens = auth.handle_callback(code)
+        tokens = google_client.exchange_code_for_token(code)
 
         # Initialize token manager
         token_manager = FirebaseOAuthStorage()
         user_storage = FirestoreUserStorage()
 
-        user_storage.upsert_user(
-            User(
-                user_id=user_id,
-                team_name=team_id,
-                associated_google_email=tokens.get("email"),
-                user_name=tokens.get("name"),
+        user = user_storage.get_user(app_name, team_id, team_user_id)
+        if user:
+            user_storage.update_associated_google_email(
+                user.app_name,
+                user.app_team_id,
+                user.app_user_id, 
+                tokens.get("email")
             )
-        )
+        else:
+            user_storage.upsert_user(
+                User(
+                    app_user_id=team_user_id,
+                    app_team_id=team_id,
+                    associated_google_email=tokens.get("email"),
+                    app_name=app_name
+                )
+            )
+
         logger.info("Saving tokens")
         token_manager.store_or_update_tokens(
             OAuthTokens(
-                user_id=user_id,
+                user_id=team_user_id,
                 team_id=team_id,
                 integration_type="google",
                 access_token=tokens["access_token"],
                 refresh_token=tokens["refresh_token"],
-                expires_at=tokens["expires_at"]
+                expires_at=tokens["expires_at"],
+                app_name=app_name
             )
         )
 
@@ -285,6 +193,7 @@ def handle_gmail_notification(event: pubsub_fn.CloudEvent[pubsub_fn.MessagePubli
     except Exception as e:
         logger.error(f"Error processing Gmail notification: {str(e)}", exc_info=True)
         print(f"Error processing Gmail notification: {str(e)}")
+
 
 def fetch_and_print_new_messages(email_address: str, start_history_id: str, end_history_id: str) -> str:
     try:
@@ -383,6 +292,7 @@ def fetch_and_print_new_messages(email_address: str, start_history_id: str, end_
     except Exception as e:
         logger.error(f"Error fetching new messages: {str(e)}", exc_info=True)
         return f"Error fetching new messages: {str(e)}"
+
 
 def generate_llm_response(user_name: str, emails: str) -> RequestChatMessage:
     messages = [

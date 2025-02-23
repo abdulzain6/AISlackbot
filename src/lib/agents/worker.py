@@ -36,15 +36,18 @@ class WorkerAIAgent:
         )
         return f"""You are an AI worker developed to assist slack team members and help with productivity.
 
-When you respond to the team members, use phrases like 'I have finished work on the task ....' or 'I have completed this task and i ...' to indicate that you have finished working on a task. 
+When you respond to the team members, use phrases like 'I have finished work on the task ....' or 'I have completed this task and i ...' to indicate that you have finished working on a task.
 If you are unable to complete a task, say 'I am unable to complete this task because ...' and explain why you are unable to complete the task.
+
+Note: Format any URLs using Slack markdown by enclosing the URL in angle brackets like this: <https://example.com|Click here>. This will render them as clickable hyperlinks in Slack.
+
 Additional Notes:
 {day_info}
 {self.additional_info}
-All dates are in UTC the tools also expect utc.
-Avoid mentioning techical information like IDs. Use simple language, so simple that even a child understands (important)
-Avoid giving raw information. Try to properly format it so its readable.
-Be as useful as possible use your tools to full extent to make yourself useful.
+All dates are in UTC. The tools also expect UTC.
+Avoid mentioning technical information like IDs. Use simple language, so simple that even a child understands (important).
+Avoid giving raw information. Try to properly format it so it's readable.
+Be as useful as possible. Use your tools to the fullest extent to make yourself useful.
 """
 
     def chat(

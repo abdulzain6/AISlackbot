@@ -2,13 +2,13 @@ import tempfile
 import os
 import uuid
 from markdown_pdf import Section, MarkdownPdf
-from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool, Tool
-from .tool_maker import ToolMaker
+from .tool_maker import ToolMaker, ToolConfig
 from ..data_store import FirebaseStorageHandler
-from .serializeable_llm import LLMConfig, initialize_llm
+from langchain.chat_models import init_chat_model
+from langchain_core.language_models import BaseChatModel
 
 
 class Report(BaseModel):
@@ -20,18 +20,41 @@ class Report(BaseModel):
     )
 
 
+class LLMConfig(BaseModel):
+    model_provider: str
+    model: str
+    llm_kwargs: dict[str, str] = {}
+
+    def to_llm(self) -> BaseChatModel:
+        init_params = {
+            "model_provider": self.model_provider,
+            "model": self.model,
+            **self.llm_kwargs
+        }
+        llm = init_chat_model(**init_params)
+        return llm
+
+
+class ReportGeneratorConfig(ToolConfig):
+    llm_conf: LLMConfig
+    storage_prefix: str
+    storage: FirebaseStorageHandler = None
+
+    class Config:
+        arbitrary_types_allowed = True
+
+
 class ReportGenerator(ToolMaker):
     def __init__(
-        self, llm_conf: LLMConfig, storage_prefix: str, storage: FirebaseStorageHandler = None
+        self, tool_config: ReportGeneratorConfig
     ):
-        self.storage_prefix = storage_prefix
-        llm = initialize_llm(llm_conf)
+        self.storage_prefix = tool_config.storage_prefix
+        llm = tool_config.llm_conf.to_llm()
         self.llm = llm.with_structured_output(Report)
-        if not storage:
-            storage = FirebaseStorageHandler()
+        if not tool_config.storage:
+            tool_config.storage = FirebaseStorageHandler()
 
-        self.storage = storage
-
+        self.storage = tool_config.storage
 
     def generate_report(self, data: str) -> Report:
         prompt = [
