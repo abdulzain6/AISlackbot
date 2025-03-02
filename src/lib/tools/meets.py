@@ -1,61 +1,53 @@
 import logging
 from datetime import datetime, timedelta
-from typing import Callable, Optional
+from typing import Any, Optional
 from langchain.tools import tool
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-
-from ...globals import OAUTH_INTEGRATIONS
+from ...lib.platforms.platform_helper import PlatformHelper
 from ...lib.integrations.auth.oauth_handler import OAuthClient
-from ...lib.platforms import Platform, send_dm
-from ...database.oauth_tokens import OAuthTokens, FirebaseOAuthStorage
+from ...database.oauth_tokens import OAuthTokens, FirebaseOAuthStorage, TokenRequest
 from .tool_maker import ToolMaker, ToolConfig
 from langchain_core.tools import Tool
+from ...database import DatabaseHelpers
 
 
 class InvalidCredsException(Exception):
     pass
 
 
-class MeetsConfig(ToolConfig):
-    send_dm_callable: Callable[[Platform, str, str], None] = send_dm
-    platform: Platform = Platform.SLACK
-    user_id: str
-    team_id: str
-    token_storage: FirebaseOAuthStorage = None
-    oauth_client: OAuthClient = OAUTH_INTEGRATIONS["google"]
-
-    class Config:
-        arbitrary_types_allowed = True
+class MeetsConfig(ToolConfig): ...
 
 
 class MeetsHandler(ToolMaker):
+    REQUESTED_DATABASE_HELPERS = [DatabaseHelpers.OAUTH_STORAGE]
+    REQUESTED_OAUTH_INTEGRATIONS = ["google"]
+
     def __init__(
         self,
         tool_config: MeetsConfig,
+        platform_helper: PlatformHelper,
+        oauth_integrations: dict[str, OAuthClient],
+        database_helpers: dict[DatabaseHelpers, Any],
     ):
         """Initialize Meets handler with OAuth2 credentials."""
         logging.info(
-            f"Initializing MeetsHandler for user {tool_config.user_id} in team {tool_config.team_id}"
+            f"Initializing MeetsHandler for user {platform_helper.user_id} in team {platform_helper.team_id}"
         )
-
-        if not tool_config.token_storage:
-            tool_config.token_storage = FirebaseOAuthStorage()
-
-        self.token_storage = tool_config.token_storage
-        self.team_user_id = tool_config.user_id
-        self.team_id = tool_config.team_id
-        self.platform = tool_config.platform
-        self.send_dm_callable = tool_config.send_dm_callable
-        self.oauth_client = tool_config.oauth_client
+        self.token_storage: FirebaseOAuthStorage = database_helpers[DatabaseHelpers.OAUTH_STORAGE]
+        self.oauth_client: OAuthClient = oauth_integrations["google"]
+        self.platform_helper = platform_helper
+        
 
     def make_service(self):
         tokens = self.token_storage.get_tokens(
-            user_id=self.team_user_id,
-            team_id=self.team_id,
-            integration_type="google",
-            app_name=self.platform.value.lower(),
+            TokenRequest(
+                user_id=self.platform_helper.user_id,
+                team_id=self.platform_helper.team_id,
+                integration_type="google",
+                app_name=self.platform_helper.platform_name,
+            )
         )
         if not tokens:
             raise InvalidCredsException("No tokens found for user")
@@ -84,10 +76,12 @@ class MeetsHandler(ToolMaker):
             except Exception as e:
                 logging.error(f"Failed to refresh access token: {str(e)}")
                 self.token_storage.delete_tokens(
-                    user_id=self.team_user_id,
-                    team_id=self.team_id,
-                    integration_type="google",
-                    app_name=self.platform.value.lower(),
+                    TokenRequest(
+                        user_id=self.platform_helper.user_id,
+                        team_id=self.platform_helper.team_id,
+                        integration_type="google",
+                        app_name=self.platform_helper.platform_name,
+                    )
                 )
                 logging.info("Deleted invalid tokens from storage")
                 raise InvalidCredsException(
@@ -101,10 +95,12 @@ class MeetsHandler(ToolMaker):
             logging.error("Token is invalid or has insufficient scopes")
             # If the token is invalid or doesn't have the required scopes, delete it
             self.token_storage.delete_tokens(
-                user_id=self.team_user_id,
-                team_id=self.team_id,
-                integration_type="google",
-                app_name=self.platform.value.lower(),
+                TokenRequest(
+                    user_id=self.platform_helper.user_id,
+                    team_id=self.platform_helper.team_id,
+                    integration_type="google",
+                    app_name=self.platform_helper.platform_name,
+                )
             )
             logging.info("Deleted invalid tokens from storage")
             raise InvalidCredsException(
@@ -121,13 +117,13 @@ class MeetsHandler(ToolMaker):
         expiry = credentials.expiry
         self.token_storage.store_or_update_tokens(
             OAuthTokens(
-                user_id=self.team_user_id,
-                team_id=self.team_id,
+                user_id=self.platform_helper.user_id,
+                team_id=self.platform_helper.team_id,
                 integration_type="google",
                 access_token=credentials.token,
                 refresh_token=credentials.refresh_token,
                 expires_at=expiry.timestamp(),
-                app_name=self.platform.value.lower(),
+                app_name=self.platform_helper.platform_name,
             )
         )
 
@@ -207,21 +203,31 @@ class MeetsHandler(ToolMaker):
             service, start_time, end_time, title, participants, description
         )
 
-    def create_event(self, service, summary: str, start_time: datetime, end_time: datetime, description: Optional[str] = None, location: Optional[str] = None) -> str:
+    def create_event(
+        self,
+        service,
+        summary: str,
+        start_time: datetime,
+        end_time: datetime,
+        description: Optional[str] = None,
+        location: Optional[str] = None,
+    ) -> str:
         """Create a new event in the user's primary calendar."""
         event = {
-            'summary': summary,
-            'start': {'dateTime': start_time.isoformat(), 'timeZone': 'UTC'},
-            'end': {'dateTime': end_time.isoformat(), 'timeZone': 'UTC'},
+            "summary": summary,
+            "start": {"dateTime": start_time.isoformat(), "timeZone": "UTC"},
+            "end": {"dateTime": end_time.isoformat(), "timeZone": "UTC"},
         }
         if description:
-            event['description'] = description
+            event["description"] = description
         if location:
-            event['location'] = location
+            event["location"] = location
 
         try:
-            created_event = service.events().insert(calendarId='primary', body=event).execute()
-            return created_event['id']
+            created_event = (
+                service.events().insert(calendarId="primary", body=event).execute()
+            )
+            return created_event["id"]
         except Exception as e:
             logging.error(f"Failed to create event: {str(e)}")
             raise
@@ -229,24 +235,33 @@ class MeetsHandler(ToolMaker):
     def delete_event(self, service, event_id: str) -> None:
         """Delete an event from the user's primary calendar."""
         try:
-            service.events().delete(calendarId='primary', eventId=event_id).execute()
+            service.events().delete(calendarId="primary", eventId=event_id).execute()
         except Exception as e:
             logging.error(f"Failed to delete event: {str(e)}")
             raise
 
     def list_events(self, service, max_results: int = 10) -> list[dict]:
         """List upcoming events from the user's primary calendar."""
-        now = datetime.utcnow().isoformat() + 'Z'
+        now = datetime.utcnow().isoformat() + "Z"
         try:
-            events_result = service.events().list(calendarId='primary', timeMin=now,
-                maxResults=max_results, singleEvents=True,
-                orderBy='startTime').execute()
-            return events_result.get('items', [])
+            events_result = (
+                service.events()
+                .list(
+                    calendarId="primary",
+                    timeMin=now,
+                    maxResults=max_results,
+                    singleEvents=True,
+                    orderBy="startTime",
+                )
+                .execute()
+            )
+            return events_result.get("items", [])
         except Exception as e:
             logging.error(f"Failed to list events: {str(e)}")
             raise
+
     def create_ai_tools(self) -> list[Tool]:
-        
+
         def handle_service_creation():
             """Handle service creation and authentication errors."""
             service, credentials = self.make_service()
@@ -256,15 +271,13 @@ class MeetsHandler(ToolMaker):
             """Send Direct Message with authentication link."""
             link = self.oauth_client.get_authorization_url(
                 {
-                    "team_id": self.team_id,
-                    "team_user_id": self.team_user_id,
-                    "app_name": self.platform.value.lower(),
+                    "team_id": self.platform_helper.team_id,
+                    "team_user_id": self.platform_helper.user_id,
+                    "app_name": self.platform_helper.platform_name,
                 }
             )
-            self.send_dm_callable(
-                self.platform,
-                f"Please Authenticate to use this functionality: <{link}|Click here to authenticate>",
-                self.team_user_id,
+            self.platform_helper.send_dm(
+                f"Please Authenticate to use this functionality: <{link}|Click here to authenticate>"
             )
 
         @tool
@@ -280,7 +293,12 @@ class MeetsHandler(ToolMaker):
                 service, credentials = handle_service_creation()
                 start_datetime = datetime.fromisoformat(start_time)
                 meeting_link = self.create_meeting_with_duration(
-                    service, start_datetime, duration_minutes, title, participants, description
+                    service,
+                    start_datetime,
+                    duration_minutes,
+                    title,
+                    participants,
+                    description,
                 )
                 self.update_credentials(credentials)
                 return meeting_link
@@ -303,7 +321,9 @@ class MeetsHandler(ToolMaker):
             """Create a new Google Calendar event."""
             try:
                 service, credentials = handle_service_creation()
-                event_id = self.create_event(service, summary, start_time, end_time, description, location)
+                event_id = self.create_event(
+                    service, summary, start_time, end_time, description, location
+                )
                 self.update_credentials(credentials)
                 return f"Event created successfully with ID: {event_id}"
             except InvalidCredsException as e:
@@ -337,10 +357,12 @@ class MeetsHandler(ToolMaker):
                 service, credentials = handle_service_creation()
                 events = self.list_events(service, max_results)
                 self.update_credentials(credentials)
-                return "\n".join([
-                    f"ID: {event['id']} - Summary: {event['summary']} - Start: {event['start'].get('dateTime', event['start'].get('date'))}"
-                    for event in events
-                ])
+                return "\n".join(
+                    [
+                        f"ID: {event['id']} - Summary: {event['summary']} - Start: {event['start'].get('dateTime', event['start'].get('date'))}"
+                        for event in events
+                    ]
+                )
             except InvalidCredsException as e:
                 logging.error(f"Invalid Creds: {e}")
                 send_authentication_dm()

@@ -9,7 +9,7 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from langchain.tools import tool
-from ....database.oauth_tokens import FirebaseOAuthStorage, OAuthTokens
+from ....database.oauth_tokens import FirebaseOAuthStorage, OAuthTokens, TokenRequest
 
 
 class GmailHandler:
@@ -51,7 +51,14 @@ class GmailHandler:
                 logging.info("Successfully refreshed access token")
             except Exception as e:
                 logging.error(f"Failed to refresh access token: {str(e)}")
-                self.token_storage.delete_tokens(user_id=user_id, team_id=team_id, integration_type="google")
+                self.token_storage.delete_tokens(
+                    TokenRequest(
+                        user_id=user_id, 
+                        team_id=team_id, 
+                        integration_type="google",
+                        app_name=self.c
+                    )
+                )
                 logging.info("Deleted invalid tokens from storage")
                 raise ValueError("Invalid or insufficient scopes in the token. Token has been deleted. Ask user to sign in to Google.")
 

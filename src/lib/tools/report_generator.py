@@ -1,12 +1,17 @@
 import tempfile
 import os
 import uuid
+
+from typing import Any
 from markdown_pdf import Section, MarkdownPdf
 from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool, Tool
+from ...database import DatabaseHelpers
+from ...lib.integrations.auth.oauth_handler import OAuthClient
+from ...lib.platforms.platform_helper import PlatformHelper
 from .tool_maker import ToolMaker, ToolConfig
-from ..data_store import FirebaseStorageHandler
+from ...database.data_store import FirebaseStorageHandler
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 
@@ -38,23 +43,23 @@ class LLMConfig(BaseModel):
 class ReportGeneratorConfig(ToolConfig):
     llm_conf: LLMConfig
     storage_prefix: str
-    storage: FirebaseStorageHandler = None
-
-    class Config:
-        arbitrary_types_allowed = True
 
 
 class ReportGenerator(ToolMaker):
+    REQUESTED_DATABASE_HELPERS = [DatabaseHelpers.DATA_STORE]
+    REQUESTED_OAUTH_INTEGRATIONS = []
+
     def __init__(
-        self, tool_config: ReportGeneratorConfig
+        self, 
+        tool_config: ReportGeneratorConfig,
+        platform_helper: PlatformHelper,
+        oauth_integrations: dict[str, OAuthClient],
+        database_helpers: dict[DatabaseHelpers, Any],
     ):
         self.storage_prefix = tool_config.storage_prefix
         llm = tool_config.llm_conf.to_llm()
         self.llm = llm.with_structured_output(Report)
-        if not tool_config.storage:
-            tool_config.storage = FirebaseStorageHandler()
-
-        self.storage = tool_config.storage
+        self.storage: FirebaseStorageHandler = database_helpers[DatabaseHelpers.DATA_STORE]
 
     def generate_report(self, data: str) -> Report:
         prompt = [

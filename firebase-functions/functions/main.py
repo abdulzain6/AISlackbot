@@ -8,6 +8,7 @@ from database.oauth_tokens import FirebaseOAuthStorage, OAuthTokens
 from google.cloud import firestore
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from database.slack_tokens import FirebaseSlackTokenStorage, SlackToken
 from database.users import FirestoreUserStorage, User
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -29,6 +30,73 @@ class RequestChatMessage(BaseModel):
     send: bool = Field(description="Whether to send or not. (Only make true if the user has import messages)")
 
    
+@https_fn.on_request()
+def slack_oauth_callback(request: https_fn.Request) -> https_fn.Response:
+    logger.info("Received Slack OAuth callback request")
+    if request.method != 'GET':
+        logger.warning(f"Invalid method: {request.method}")
+        return https_fn.Response(
+            json.dumps({"error": "Method not allowed"}),
+            status=405,
+            content_type="application/json"
+        )
+
+    code = request.args.get("code")
+    client = OAuthClient(
+        client_id=os.getenv("SLACK_CLIENT_ID"),
+        client_secret=os.getenv("SLACK_CLIENT_SECRET"),
+        redirect_uri=os.getenv("SLACK_REDIRECT_URI", "https://localhost:3000"),
+        auth_url="https://slack.com/oauth/v2/authorize",
+        token_url="https://slack.com/api/oauth.v2.access",
+        scope=" ".join([
+            "app_mentions:read",
+            "assistant:write",
+            "calls:read",
+            "channels:history",
+            "channels:read",
+            "chat:write",
+            "files:read",
+            "files:write",
+            "im:history",
+            "im:read",
+            "im:write",
+            "im:write.topic",
+            "links:read",
+            "metadata.message:read",
+            "mpim:history",
+            "mpim:read",
+            "mpim:write",
+            "reminders:write",
+            "team:read",
+            "users.profile:read",
+            "users:read",
+            "users:read.email"
+        ]),
+        secret_key=AUTH_SECRET_KEY
+    )
+    token_response = client.exchange_code_for_token(code, validate=False)
+
+    # Extract relevant data from token response
+    team_data = token_response.get('team', {})
+
+    FirebaseSlackTokenStorage().upsert_token(
+        SlackToken(
+            team_id=team_data.get('id'),
+            team_name=team_data.get('name'),
+            bot_user_id=token_response.get('bot_user_id'),
+            bot_access_token=token_response.get('access_token'),
+            is_enterprise_install=token_response.get('is_enterprise_install', False)
+        )
+    )
+
+    logger.info(f"Successfully stored Slack token for team {team_data.get('name')}")
+
+    return https_fn.Response(
+        json.dumps({"message": "Authorization successful"}),
+        status=200,
+        content_type="application/json"
+    )
+
 @https_fn.on_request()
 def google_oauth_callback(request: https_fn.Request) -> https_fn.Response:
     logger.info("Received Google OAuth callback request")
@@ -136,6 +204,26 @@ def google_oauth_callback(request: https_fn.Request) -> https_fn.Response:
             status=500,
             content_type="application/json"
         )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 @pubsub_fn.on_message_published(topic="slackbotai-gamil")
 def handle_gmail_notification(event: pubsub_fn.CloudEvent[pubsub_fn.MessagePublishedData]) -> None:

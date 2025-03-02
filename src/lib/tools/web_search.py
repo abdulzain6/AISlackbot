@@ -1,6 +1,9 @@
 from duckduckgo_search import DDGS
-from typing import List
+from typing import Any, List
 from langchain.tools import tool, Tool
+from ...database import DatabaseHelpers
+from ...lib.integrations.auth.oauth_handler import OAuthClient
+from ...lib.platforms.platform_helper import PlatformHelper
 from .tool_maker import ToolMaker, ToolConfig
 import requests
 import html2text
@@ -10,7 +13,13 @@ class WebSearchConfig(ToolConfig):
     ...
 
 class WebSearch(ToolMaker):
-    def __init__(self, tool_config: WebSearchConfig = None):
+    def __init__(
+        self, 
+        tool_config: WebSearchConfig,
+        platform_helper: PlatformHelper,
+        oauth_integrations: dict[str, OAuthClient],
+        database_helpers: dict[DatabaseHelpers, Any],
+    ):
         self.ddgs = DDGS()
     
     def search_results(self, query: str, max_results: int = 10) -> List[dict]:

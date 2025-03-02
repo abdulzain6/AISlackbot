@@ -21,7 +21,9 @@ firebase_admin.initialize_app(
         )
     }
 )
-app = App(token=os.getenv("SLACK_BOT_TOKEN"))
+
+
+app = App(signing_secret=os.getenv("SLACK_SIGNING_SECRET"), token=os.getenv("SLACK_APP_TOKEN"))
 client: WebClient = app.client
 
 AUTH_SECRET_KEY = os.getenv("AUTH_SECRET_KEY")
@@ -39,5 +41,39 @@ OAUTH_INTEGRATIONS = {
             "https://www.googleapis.com/auth/calendar"
         ]),
         secret_key=AUTH_SECRET_KEY
-    )
+    ),
+    "slack": OAuthClient(
+        client_id=os.getenv("SLACK_CLIENT_ID"),
+        client_secret=os.getenv("SLACK_CLIENT_SECRET"),
+        redirect_uri=os.getenv("SLACK_REDIRECT_URI", "https://localhost:3000"),
+        auth_url="https://slack.com/oauth/v2/authorize",
+        token_url="https://slack.com/api/oauth.v2.access",
+        scope=" ".join([
+            "app_mentions:read",
+            "assistant:write",
+            "calls:read",
+            "channels:history",
+            "channels:read",
+            "chat:write",
+            "files:read",
+            "files:write",
+            "im:history",
+            "im:read",
+            "im:write",
+            "im:write.topic",
+            "links:read",
+            "metadata.message:read",
+            "mpim:history",
+            "mpim:read",
+            "mpim:write",
+            "reminders:write",
+            "team:read",
+            "users.profile:read",
+            "users:read",
+            "users:read.email"
+        ]),
+        secret_key=AUTH_SECRET_KEY
+    ),
 }
+
+print(OAUTH_INTEGRATIONS["slack"].get_authorization_url())

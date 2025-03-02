@@ -1,22 +1,18 @@
+import json
 import logging
 import os
-import uuid
+import re
 
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from slack_sdk.errors import SlackApiError
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_openai import ChatOpenAI
+from .database.slack_tokens import FirebaseSlackTokenStorage
+from .lib.event_handlers import FORM_EVENT_HANDLERS
 from .lib.tools.report_generator import LLMConfig
-from .lib.knowledge_manager import KnowledgeManager
-from .lib.agents.orchestrator import OrchestratorAgent
 from .lib.agents.worker import WorkerConfig
 from .database.users import User, FirestoreUserStorage
-from .database.user_tasks import FirebaseUserTasks
-from .lib.tools import get_all_tools, ToolName
-from .lib.platforms.slack import (
-    get_chat_history,
-    send_message_to_slack,
-    SendMessageConfig,
-)
+from .lib.tools import ToolName
+from .lib.platforms.slack import SlackHelper
 from .lib.platforms import Platform
 from .lib.tasks import perform_task
 from .globals import client, app
@@ -38,6 +34,15 @@ def handle_message_events(body):
         is_direct_message = channel_id.startswith("D")
         bot_id = body.get("authorizations", [{}])[0].get("user_id", "")
         bot_mentioned = f"<@{bot_id}>" in text if bot_id else False
+
+        token = FirebaseSlackTokenStorage().get_token(team_id).bot_access_token
+        if not token:
+            logging.error(f"No token found for team {team_id}")
+            return
+
+        platform_args = {"slack_token": token, "user_id": user_id}
+        helper = SlackHelper.from_token(token=token, user_id=user_id)
+
         logging.info(
             f"Message from user {user_id} in channel {channel_id} team {team_id}: {text}"
         )
@@ -45,21 +50,16 @@ def handle_message_events(body):
         if user_id and "bot_id" not in event and text.strip() and team_id:
             try:
 
-                history = get_chat_history(client, channel_id, 10, thread_ts=thread_ts)
-
-                user = FirestoreUserStorage().get_user(
-                    "slack", team_id, user_id
-                )
+                history = helper.get_chat_history(channel_id, 10, thread_ts=thread_ts)
+                user = FirestoreUserStorage().get_user("slack", team_id, user_id)
                 if not user:
                     user = User(
-                        app_team_id=team_id,
-                        app_user_id=user_id,
-                        app_name="slack"
+                        app_team_id=team_id, app_user_id=user_id, app_name="slack"
                     )
                     FirestoreUserStorage().upsert_user(user)
 
                 # Setup AI Agent
-                worker_tools_dict = {
+                tools_dict = {
                     ToolName.WEB_SEARCH: {},
                     ToolName.REPORT_GENERATOR: dict(
                         llm_conf=LLMConfig(
@@ -67,78 +67,29 @@ def handle_message_events(body):
                         ),
                         storage_prefix=f"slack/{user.app_team_id}/{user.app_user_id}/",
                     ),
-                    ToolName.GOOGLE_MEETS: {
-                        "client_id": os.getenv("GOOGLE_CLIENT_ID"),
-                        "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
-                        "user_id": user.app_user_id,
-                        "team_id": user.app_team_id,
-                        "redirect_uri": os.getenv("GOOGLE_REDIRECT_URI"),
-                        "platform": Platform.SLACK,
-                    },
-                    ToolName.GOOGLE_OAUTH: {
-                        "client_id": os.getenv("GOOGLE_CLIENT_ID"),
-                        "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
-                        "user_id": user.app_user_id,
-                        "team_id": user.app_team_id,
-                        "redirect_uri": os.getenv("GOOGLE_REDIRECT_URI"),
-                        "platform": Platform.SLACK,
-                    },
+                    ToolName.GOOGLE_MEETS: {},
+                    ToolName.GOOGLE_OAUTH: {}
                 }
-
-                orchestrator_tools_dict = {
-                    ToolName.TEAM_TASKS: {"team_id": team_id, "platform" : Platform.SLACK},
-                }
-
-                worker_tools = get_all_tools(worker_tools_dict)
-                orchestrator_tools = get_all_tools(orchestrator_tools_dict)
-
-                tasks = FirebaseUserTasks().get_latest_tasks_for_team(user.app_team_id, "slack", 5)
-                task_list = '\n'.join(f"{i+1}. {task.task_name}" for i, task in enumerate(tasks))
-                orchestrator_additional_info = f"""
-============================
-Here is what you have already done. (Avoid duplicates):
-{task_list}
-============================
-"""
-
-                def worker_runner(task_name: str, task_detail: str, task_id: str):
-                    perform_task.apply_async(
-                        kwargs=dict(
-                            task_name=task_name,
-                            task_detail=task_detail,
-                            task_id=task_id,
-                            user=user,
-                            platform=Platform.SLACK,
-                            send_message_config=SendMessageConfig(
-                                channel_id=channel_id,
-                                thread_ts=thread_ts,
+                perform_task.apply_async(
+                    kwargs=dict(
+                        conversation=[
+                            f'{message["display_name"]}: {message["message"]}'
+                            for message in history
+                        ],
+                        worker_config=WorkerConfig(
+                            worker_tools_dict=tools_dict,
+                            worker_llm_config=LLMConfig(
+                                model_provider="openai", model="gpt-4o", llm_kwargs={}
                             ),
-                            worker_config=WorkerConfig(
-                                worker_tools_dict=worker_tools_dict,
-                                worker_llm_config={"model": "gpt-4o-2024-11-20"},
-                                worker_additional_info="",
-                            ),
+                            worker_additional_info="",
                         ),
-                        task_id=task_id,
+                        platform=Platform.SLACK,
+                        platform_args=platform_args,
+                        channel_id=channel_id,
+                        thread_ts=thread_ts,
+                        disable_doing_nothing=is_direct_message or bot_mentioned,
                     )
-
-                agent = OrchestratorAgent(
-                    llm=ChatOpenAI(model="gpt-4o-2024-11-20"),
-                    run_worker_task=worker_runner,
-                    disable_checker=is_direct_message or bot_mentioned,
-                    worker_tools=worker_tools,
-                    orchestrator_tools=orchestrator_tools,
-                    additional_info=orchestrator_additional_info,
                 )
-
-                response = agent.run(
-                    [
-                        f'{message["display_name"]}: {message["message"]}'
-                        for message in history
-                    ]
-                )
-                if response:
-                    send_message_to_slack(channel_id, response, thread_ts)
 
             except SlackApiError as e:
                 logging.error(f"Error posting message: {e.response['error']}")
@@ -147,11 +98,97 @@ Here is what you have already done. (Avoid duplicates):
         logging.error(f"Error processing message: {str(e)}", exc_info=True)
 
 
+@app.action(re.compile(r".*_submit$"))
+def handle_submit_button(ack, body, logger):
+    """Handle form submissions and extract submitted values into a dictionary"""
+    ack()
+    logger.info(f"Processed form submission with response: {body}")
+
+    user_id = body["user"]["id"]
+    team_id = body["user"]["team_id"]
+    channel_id = body.get("channel", {}).get("id")
+    action_id = body["actions"][0]["action_id"].replace("_submit", "")
+    thread_ts = body.get("message", {}).get("thread_ts") or body.get("message", {}).get(
+        "ts"
+    )
+    message_ts = body.get("message", {}).get("ts")
+    token = FirebaseSlackTokenStorage().get_token(team_id).bot_access_token
+    if not token:
+        logging.error(f"No token found for team {team_id}")
+        return
+
+    helper = SlackHelper.from_token(token=token, user_id=user_id)
+
+    # Extract the form values from the state object
+    form_values = {}
+    if "state" in body and "values" in body["state"]:
+        state_values = body["state"]["values"]
+
+        # Iterate through each block in the form
+        for block_id, block_data in state_values.items():
+            # Each block may contain one or more input elements
+            for input_id, input_data in block_data.items():
+                # Extract the value based on input type
+                if "value" in input_data:
+                    # For text inputs, selects, etc.
+                    form_values[f"{input_id}"] = input_data["value"]
+
+    logger.info(f"Extracted form values: {form_values}")
+
+    try:
+        action_data = json.loads(body["actions"][0]["value"])
+        metadata = action_data.get("metadata", {})
+
+        logger.info(
+            f"Form '{action_id}' submitted by user {user_id} with metadata: {metadata} Data: {action_data}"
+        )
+
+        FORM_EVENT_HANDLERS[action_id](
+            team_id, user_id, "slack", metadata=metadata, form_values=form_values
+        )
+        # Try to update the original message to disable the form
+        if message_ts:
+            try:
+                # Get the original blocks and modify them to appear disabled
+                blocks = body.get("message", {}).get("blocks", [])
+                # Modify blocks to make form appear disabled - replace submit button with text
+                for block in blocks:
+                    if block.get("type") == "actions":
+                        # Replace actions block with a context block indicating completion
+                        block["type"] = "context"
+                        block["elements"] = [
+                            {
+                                "type": "plain_text",
+                                "text": "✅ Form submitted successfully",
+                            }
+                        ]
+
+                # Update the original message
+                client.chat_update(
+                    channel=channel_id or user_id,
+                    ts=message_ts,
+                    blocks=blocks,
+                    text="Form submitted successfully",
+                )
+            except SlackApiError as e:
+                logger.error(f"Error updating form message: {e.response['error']}")
+
+    except AssertionError as e:
+        logger.error(f"Assertion error: {str(e)}")
+        helper.send_message(channel_id or user_id, str(e), thread_ts=thread_ts)
+    except Exception as e:
+        logger.error(f"Failed to parse action data from button value: {str(e)}")
+        error_message = (
+            "There was an issue processing your form submission. Please try again."
+        )
+        helper.send_message(channel_id or user_id, error_message, thread_ts=thread_ts)
+
+
 def entry_point():
     """Main function with additional error handling"""
     try:
         # Verify environment variables
-        required_env_vars = ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"]
+        required_env_vars = ["SLACK_APP_TOKEN"]
         missing_vars = [var for var in required_env_vars if not os.getenv(var)]
 
         if missing_vars:

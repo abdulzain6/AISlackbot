@@ -40,7 +40,7 @@ class OAuthClient:
         )
         return auth_url
 
-    def exchange_code_for_token(self, code: str) -> Dict[str, Any]:
+    def exchange_code_for_token(self, code: str, validate: bool = True) -> Dict[str, Any]:
         """Exchange the authorization code for an access token (Google OAuth)."""
         client = OAuth2Session(
             client_id=self.client_id,
@@ -55,9 +55,9 @@ class OAuthClient:
             auth=None,  # Disables Basic Auth to prevent conflicts
         )
 
-        self.validate_scopes(token)
+        if validate:
+            self.validate_scopes(token)
         return token
-
 
 
     def refresh_token(self, refresh_token: str) -> Dict[str, Any]:
