@@ -22,6 +22,11 @@ class PlatformHelper(ABC):
 
     @property
     @abstractmethod
+    def owner_uid(self) -> str:
+        ...
+
+    @property
+    @abstractmethod
     def user_id(self) -> str:
         ...
 

@@ -7,6 +7,7 @@ from .report_generator import ReportGenerator, ReportGeneratorConfig
 from .tool_maker import ToolMaker, ToolConfig
 from .meets import MeetsHandler, MeetsConfig
 from .google import GoogleOauthToolMaker, GoogleOauthConfig
+from .jira import JiraConfig, JiraTools
 from langchain.tools import Tool
 from ...database import DATABASE_HELPER_MAP
 from ..platforms import Platform, platform_helper_factory
@@ -17,6 +18,7 @@ class ToolName(Enum):
     REPORT_GENERATOR = "report_generator"
     GOOGLE_MEETS = "google_meets"
     GOOGLE_OAUTH = "google_oauth"
+    JIRA = "jira"
 
 
 tool_name_to_cls: dict[ToolName, tuple[Type[ToolMaker], Type[ToolConfig]]] = {
@@ -24,6 +26,7 @@ tool_name_to_cls: dict[ToolName, tuple[Type[ToolMaker], Type[ToolConfig]]] = {
     ToolName.REPORT_GENERATOR: (ReportGenerator, ReportGeneratorConfig),
     ToolName.GOOGLE_MEETS: (MeetsHandler, MeetsConfig),
     ToolName.GOOGLE_OAUTH: (GoogleOauthToolMaker, GoogleOauthConfig),
+    ToolName.JIRA: (JiraTools, JiraConfig)
 }
 
 

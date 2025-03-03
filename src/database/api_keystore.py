@@ -8,6 +8,7 @@ class APIKey(BaseModel):
     user_id: Optional[str] = None
     api_key: str
     integration_name: str
+    metadata: dict[str, str]
 
     @property
     def doc_id(self) -> str:
