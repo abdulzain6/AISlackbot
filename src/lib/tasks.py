@@ -8,7 +8,7 @@ import logging
 
 
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 app = Celery(
     "tasks", broker="redis://localhost:6379/0", backend="redis://localhost:6379/1"

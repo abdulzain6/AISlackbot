@@ -10,7 +10,7 @@ from .platform_helper import PlatformHelper, FormElement
 
 
 class SlackHelper(PlatformHelper):
-    platform_name = "SLACK"
+    platform_name = "slack"
 
     def __init__(self, client: WebClient, user_id: str = None):
         """
@@ -216,6 +216,7 @@ class SlackHelper(PlatformHelper):
         title: str = "Please complete this form",
         metadata: dict = None,
         user_id: str = None,
+        extra_context: str = ""
     ) -> bool:
         """
         Send a form to a user via DM and return success status
@@ -303,12 +304,13 @@ class SlackHelper(PlatformHelper):
                     "elements": [
                         {
                             "type": "mrkdwn",
-                            "text": ":pencil: *Please complete this form*",
+                            "text": f":pencil: *Please complete this form* {extra_context}",
                         }
                     ],
                 }
             )
 
+            logging.info(f"Blocks sending: {form_blocks}")
             # Send the message with form blocks
             self.client.chat_postMessage(channel=channel_id, blocks=form_blocks)
             logging.info(
@@ -324,4 +326,4 @@ class SlackHelper(PlatformHelper):
 
     @classmethod
     def from_token(cls, token: str, user_id: str) -> "SlackHelper":
-        return cls(WebClient(token=token), user_id)
+        return SlackHelper(WebClient(token=token), user_id)

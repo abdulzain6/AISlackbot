@@ -41,7 +41,7 @@ def get_all_tools(
         tool_cls, tool_config_cls = tool_name_to_cls.get(tool_name)
         if tool_cls:
             database_helpers = {
-                helper: DATABASE_HELPER_MAP[helper]
+                helper: DATABASE_HELPER_MAP[helper]()
                 for helper in tool_cls.REQUESTED_DATABASE_HELPERS
             }
 

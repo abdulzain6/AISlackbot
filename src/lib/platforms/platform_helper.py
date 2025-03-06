@@ -59,6 +59,7 @@ class PlatformHelper(ABC):
         title: str = "Please complete this form",
         metadata: dict = None,
         user_id: str = None,
+        extra_context: str = ""
     ) -> bool:
         """
         Send a form to a user via DM and return success status

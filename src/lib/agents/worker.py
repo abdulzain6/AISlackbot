@@ -45,6 +45,8 @@ Avoid giving raw information. Try to properly format it so it's readable.
 Be as useful as possible. Use your tools to the fullest extent to make yourself useful.
 Before doing anything message the user that you have started working on the task.
 If you are unsure about something, ask the user for clarification.
+For jira related tasks, always call get_available_jira_projects_and_issue_types to get project info, search_jira_users can be used to find account ids of users.
+You can run jql to get issue information.
 """
 
     def chat(self, tools: list[Tool], conversation: list[str]) -> str:

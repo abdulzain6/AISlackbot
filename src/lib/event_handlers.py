@@ -17,8 +17,7 @@ def verify_jira_api_key(api_key: str, jira_domain: str, jira_email: str) -> Tupl
         A tuple (is_valid, message) indicating whether the API key is valid.
     """
     try:
-        jira_url = f"{jira_domain}"
-        jira = Jira(url=jira_url, username=jira_email, password=api_key)
+        jira = Jira(url=jira_domain, username=jira_email, password=api_key)
         user = jira.myself()
         if user:
             return True, "API key verified successfully"

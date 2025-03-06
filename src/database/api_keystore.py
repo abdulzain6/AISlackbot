@@ -1,3 +1,4 @@
+import logging
 from typing import Optional
 from pydantic import BaseModel
 from google.cloud import firestore
@@ -8,14 +9,16 @@ class APIKey(BaseModel):
     user_id: Optional[str] = None
     api_key: str
     integration_name: str
-    metadata: dict[str, str]
+    metadata: dict[str, str] = {}
 
     @property
     def doc_id(self) -> str:
         key_components = [self.team_id, self.integration_name, self.app_name]
         if self.user_id:
             key_components.append(self.user_id)
-        return "_".join(key_components)
+        doc_id =  "_".join(key_components)
+        logging.info(f"Doc id: {doc_id}")
+        return doc_id
 
 class APIKeyRepository:
     def __init__(self):
@@ -43,7 +46,7 @@ class APIKeyRepository:
         doc_ref = self.db.collection(self.collection_name).document(temp_key.doc_id)
         doc_snapshot = doc_ref.get()
         if doc_snapshot.exists:
-            return APIKey(**doc_snapshot.to_dict())
+            return APIKey.model_validate(doc_snapshot.to_dict())
         return None
 
     def update_key(self, api_key: APIKey) -> None:
