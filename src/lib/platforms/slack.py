@@ -1,8 +1,11 @@
 import re
 import logging
 import json
+from redis import Redis
+import redis
 from slack_sdk.web import WebClient
 from slack_sdk.errors import SlackApiError
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from typing import Any, Dict, List, Optional
 from typing import Optional
 from .platform_helper import PlatformHelper, FormElement
@@ -12,13 +15,22 @@ from .platform_helper import PlatformHelper, FormElement
 class SlackHelper(PlatformHelper):
     platform_name = "slack"
 
-    def __init__(self, client: WebClient, user_id: str = None):
+    def __init__(self, client: WebClient, redis: Redis, user_id: str = None, init_auth: bool = True):
         """
         Initialize SlackHelper with a Slack WebClient and optionally a user ID.
         Automatically retrieves and stores the team ID upon initialization.
         """
         self.client = client
+        self.redis = redis
         self._user_id = user_id
+        if init_auth:
+            auth_info = self._get_auth_info()
+            self.bot_id = auth_info.get("bot_id")
+            self._team_id = auth_info.get("team_id") 
+            logging.info(f"TeamID: {self.team_id} BotID: {self.bot_id} Auth Test: {auth_info}")
+        else:
+            self.bot_id = None
+            self._team_id = None
 
     @property
     def owner_uid(self) -> Optional[str]:
@@ -46,40 +58,58 @@ class SlackHelper(PlatformHelper):
 
     @property
     def team_id(self) -> str:
-        return self._get_team_id()
+        if not self._team_id:
+            auth_info = self._get_auth_info()
+            self.bot_id = auth_info.get("bot_id")
+            self._team_id = auth_info.get("team_id")
+            
+        return self._team_id
 
-    def _get_team_id(self) -> Optional[str]:
+    def _get_auth_info(self) -> Optional[str]:
         """
         Retrieve the team ID using the auth.test endpoint.
         Returns None if the request fails.
         """
         response = self.client.auth_test()
         if response["ok"]:
-            team_id = response.get("team_id")
-            logging.info(f"Successfully retrieved team ID: {team_id}")
-            return team_id
+            return response
         else:
-            logging.error(f"Failed to get team ID: {response.get('error')}")
-            return None
-
+            raise ValueError(f"Failed to get auth info: {response['error']}")
+        
     def convert_to_slack_markdown(self, text: str) -> str:
         """Convert Markdown links to Slack's format"""
         return re.sub(
             r"\[([^\]]+)\]\(([^)]+)\)", lambda m: f"<{m.group(2)}|{m.group(1)}>", text
         )
 
-    def to_block(self, message: str) -> list[dict[str, str]]:
-        """Convert a message to a Slack block kit format"""
-        converted_message = self.convert_to_slack_markdown(message.strip())
+    def to_block(self, message: str) -> List[Dict[str, Any]]:
+        """
+        Convert a message to a Slack block kit format.
+        Removes asterisks if they are not rendering correctly for emphasis.
+        """
+        # Removing `**` used for bold if Slack Markdown doesn't handle it well
+        text_without_asterisks = message.replace('**', '')
+
+        # If further formatting is needed, it can be added here. For now, just remove the bold.
+        converted_message = self.convert_to_slack_markdown(text_without_asterisks.strip())
+
         return [
             {"type": "section", "text": {"type": "mrkdwn", "text": converted_message}},
-            {"type": "divider"},
-            {
-                "type": "context",
-                "elements": [
-                    {"type": "mrkdwn", "text": ":sparkles: *Powered by SlackBotAI*"}
-                ],
-            },
+        ]
+    
+    def to_block(self, message: str) -> List[Dict[str, Any]]:
+        """
+        Convert a message to a Slack block kit format.
+        Removes asterisks if they are not rendering correctly for emphasis.
+        """
+        # Removing `**` used for bold if Slack Markdown doesn't handle it well
+        text_without_asterisks = message.replace('**', '')
+
+        # If further formatting is needed, it can be added here. For now, just remove the bold.
+        converted_message = self.convert_to_slack_markdown(text_without_asterisks.strip())
+
+        return [
+            {"type": "section", "text": {"type": "mrkdwn", "text": converted_message}},
         ]
 
     def send_message(self, channel_id: str, message: str, thread_ts: str = None):
@@ -120,10 +150,9 @@ class SlackHelper(PlatformHelper):
 
     def get_chat_history(
         self, channel_id: str, limit: int = 10, thread_ts: str = None
-    ) -> Optional[List[Dict[str, str]]]:
-        """Get chat history from Slack with optimized user/bot info retrieval"""
+    ) -> Optional[List[BaseMessage]]:
+        """Get chat history from Slack with optimized caching and user/bot info retrieval"""
         logging.info(f"Fetching chat history for channel {channel_id}")
-
         try:
             # Get messages based on whether it's a thread or regular channel history
             if thread_ts:
@@ -138,44 +167,35 @@ class SlackHelper(PlatformHelper):
             messages = response.get("messages", [])
             if not messages:
                 return []
-            
-            # Extract all unique user and bot IDs in a single pass
-            user_ids = set()
-            bot_ids = set()
 
-            for message in messages:
-                if "user" in message:
-                    user_ids.add(message["user"])
-                elif "bot_id" in message:
-                    bot_ids.add(message["bot_id"])
-
-            # Batch fetch user info
+            # Initialize caches
             user_cache = {}
-            if user_ids:
-                for user_id in user_ids:
-                    try:
-                        user_info = self.client.users_info(user=user_id).get("user", {})
-                        user_cache[user_id] = user_info
-                    except Exception as e:
-                        logging.error(f"Error fetching user {user_id}: {str(e)}")
-                        user_cache[user_id] = {}
-
-            # Batch fetch bot info
             bot_cache = {}
-            if bot_ids:
-                for bot_id in bot_ids:
-                    try:
-                        bot_info = self.client.bots_info(bot=bot_id).get("bot", {})
-                        bot_cache[bot_id] = bot_info
-                    except Exception as e:
-                        logging.error(f"Error fetching bot {bot_id}: {str(e)}")
-                        bot_cache[bot_id] = {}
-
-            # Process messages with the cached user/bot info
             results = []
+
+            # Helper function to get cached info or fetch & cache if not present
+            def fetch_and_cache_info(cache_key: str, fetch_func) -> dict:
+                cached_data = self.redis.get(cache_key)
+                if cached_data:
+                    return json.loads(cached_data)
+                try:
+                    data = fetch_func()
+                    self.redis.set(cache_key, json.dumps(data))
+                    return data
+                except Exception as e:
+                    logging.error(f"Error fetching info for {cache_key}: {e}")
+                    return {}
+            
             for message in messages:
-                if "user" in message:
+                content = message.get('text', '')
+                cache_key = None
+                if "user" in message and "bot_id" not in message:
                     user_id = message["user"]
+                    if user_id not in user_cache:
+                        cache_key = f"slack:{self.team_id}:{user_id}"
+                        user_cache[user_id] = fetch_and_cache_info(
+                            cache_key, lambda: self.client.users_info(user=user_id).get("user", {})
+                        )
                     user_info = user_cache.get(user_id, {})
                     profile = user_info.get("profile", {})
                     display_name = (
@@ -183,30 +203,35 @@ class SlackHelper(PlatformHelper):
                         or profile.get("real_name")
                         or user_info.get("name", "Unknown")
                     )
+                    results.append(HumanMessage(content=f"{display_name}: {content}"))
+
                 elif "bot_id" in message:
+                    logging.info(f"Bot message: {message}, {self.bot_id}")
                     bot_id = message["bot_id"]
-                    bot_info = bot_cache.get(bot_id, {})
-                    display_name = bot_info.get("name", "Unknown Bot")
+                    if bot_id not in bot_cache and bot_id != self.bot_id:
+                        cache_key = f"slack:{self.team_id}:bot:{bot_id}"
+                        bot_cache[bot_id] = fetch_and_cache_info(
+                            cache_key, lambda: self.client.bots_info(bot=bot_id).get("bot", {})
+                        )
+                    if bot_id == self.bot_id:
+                        results.append(AIMessage(content=content))
+                    else:
+                        results.append(HumanMessage(content=f"Unknown: {content}"))
+
                 else:
-                    display_name = "Unknown"
+                    results.append(HumanMessage(content=f"Unknown: {content}"))
 
-                results.append(
-                    {"display_name": display_name, "message": message.get("text", "")}
-                )
-
-            # Return results in appropriate order based on context
+            # Reverse order for regular channel history (not thread replies)
             if not thread_ts:
-                results.reverse()  # Only reverse for regular channel history
+                results.reverse()
 
-            logging.info(
-                f"Successfully retrieved {len(results)} messages with display names"
-            )
+            logging.info(f"Successfully retrieved {len(results)} messages as Langchain objects")
             return results
 
         except Exception as e:
-            logging.error(
-                f"Error retrieving chat history for channel {channel_id}: {str(e)}"
-            )
+            import traceback
+            traceback.print_exc()
+            logging.error(f"Error retrieving chat history for channel {channel_id}: {e}")
             return None
 
     def send_form_dm(
@@ -325,5 +350,5 @@ class SlackHelper(PlatformHelper):
             return False
 
     @classmethod
-    def from_token(cls, token: str, user_id: str) -> "SlackHelper":
-        return SlackHelper(WebClient(token=token), user_id)
+    def from_token(cls, token: str, user_id: str, redis: redis.Redis, init_auth: bool = True) -> "SlackHelper":
+        return SlackHelper(WebClient(token=token), redis=redis, user_id=user_id, init_auth=init_auth)

@@ -1,16 +1,17 @@
 import logging
 from datetime import datetime, timedelta
-from typing import Any, Optional
+from typing import Optional
 from langchain.tools import tool
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+import redis
 from ...lib.platforms.platform_helper import PlatformHelper
 from ...lib.integrations.auth.oauth_handler import OAuthClient
-from ...database.oauth_tokens import OAuthTokens, FirebaseOAuthStorage, TokenRequest
+from ...database.oauth_tokens import OAuthTokens
 from .tool_maker import ToolMaker, ToolConfig
 from langchain_core.tools import Tool
-from ...database import DatabaseHelpers
+from sqlalchemy.orm import Session
 
 
 class InvalidCredsException(Exception):
@@ -21,7 +22,6 @@ class MeetsConfig(ToolConfig): ...
 
 
 class MeetsHandler(ToolMaker):
-    REQUESTED_DATABASE_HELPERS = [DatabaseHelpers.OAUTH_STORAGE]
     REQUESTED_OAUTH_INTEGRATIONS = ["google"]
 
     def __init__(
@@ -29,26 +29,27 @@ class MeetsHandler(ToolMaker):
         tool_config: MeetsConfig,
         platform_helper: PlatformHelper,
         oauth_integrations: dict[str, OAuthClient],
-        database_helpers: dict[DatabaseHelpers, Any],
+        session: Session,
+        redis_client: redis.Redis,
     ):
         """Initialize Meets handler with OAuth2 credentials."""
         logging.info(
             f"Initializing MeetsHandler for user {platform_helper.user_id} in team {platform_helper.team_id}"
         )
-        self.token_storage: FirebaseOAuthStorage = database_helpers[DatabaseHelpers.OAUTH_STORAGE]
+        self.session = session
         self.oauth_client: OAuthClient = oauth_integrations["google"]
         self.platform_helper = platform_helper
         
 
     def make_service(self):
-        tokens = self.token_storage.get_tokens(
-            TokenRequest(
-                user_id=self.platform_helper.user_id,
-                team_id=self.platform_helper.team_id,
-                integration_type="google",
-                app_name=self.platform_helper.platform_name,
-            )
+        tokens = OAuthTokens.read(
+            session=self.session,
+            user_id=self.platform_helper.user_id,
+            team_id=self.platform_helper.team_id,
+            integration_type="google",
+            app_name=self.platform_helper.platform_name,
         )
+        
         if not tokens:
             raise InvalidCredsException("No tokens found for user")
 
@@ -75,13 +76,12 @@ class MeetsHandler(ToolMaker):
                     logging.info("Successfully refreshed access token")
             except Exception as e:
                 logging.error(f"Failed to refresh access token: {str(e)}")
-                self.token_storage.delete_tokens(
-                    TokenRequest(
-                        user_id=self.platform_helper.user_id,
-                        team_id=self.platform_helper.team_id,
-                        integration_type="google",
-                        app_name=self.platform_helper.platform_name,
-                    )
+                OAuthTokens.delete(
+                    session=self.session,
+                    user_id=self.platform_helper.user_id,
+                    team_id=self.platform_helper.team_id,
+                    integration_type="google",
+                    app_name=self.platform_helper.platform_name,
                 )
                 logging.info("Deleted invalid tokens from storage")
                 raise InvalidCredsException(
@@ -93,14 +93,12 @@ class MeetsHandler(ToolMaker):
             ["https://www.googleapis.com/auth/calendar"]
         ):
             logging.error("Token is invalid or has insufficient scopes")
-            # If the token is invalid or doesn't have the required scopes, delete it
-            self.token_storage.delete_tokens(
-                TokenRequest(
-                    user_id=self.platform_helper.user_id,
-                    team_id=self.platform_helper.team_id,
-                    integration_type="google",
-                    app_name=self.platform_helper.platform_name,
-                )
+            OAuthTokens.delete(
+                session=self.session,
+                user_id=self.platform_helper.user_id,
+                team_id=self.platform_helper.team_id,
+                integration_type="google",
+                app_name=self.platform_helper.platform_name,
             )
             logging.info("Deleted invalid tokens from storage")
             raise InvalidCredsException(
@@ -115,17 +113,15 @@ class MeetsHandler(ToolMaker):
         """Destructor to store new tokens back to the database."""
         logging.info("Storing new tokens")
         expiry = credentials.expiry
-        self.token_storage.store_or_update_tokens(
-            OAuthTokens(
-                user_id=self.platform_helper.user_id,
-                team_id=self.platform_helper.team_id,
-                integration_type="google",
-                access_token=credentials.token,
-                refresh_token=credentials.refresh_token,
-                expires_at=expiry.timestamp(),
-                app_name=self.platform_helper.platform_name,
-            )
-        )
+        OAuthTokens(
+            user_id=self.platform_helper.user_id,
+            team_id=self.platform_helper.team_id,
+            integration_type="google",
+            access_token=credentials.token,
+            refresh_token=credentials.refresh_token,
+            expires_at=expiry.timestamp(),
+            app_name=self.platform_helper.platform_name,
+        ).save(self.session)
 
     def create_meeting(
         self,

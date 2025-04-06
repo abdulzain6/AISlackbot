@@ -1,28 +1,13 @@
 from slack_bolt import App
 from slack_sdk.web import WebClient
-from firebase_admin import credentials
 from .lib.integrations.auth.oauth_handler import OAuthClient
-
-import os
-import dotenv, logging
-import firebase_admin
+import dotenv, logging, os
 
 
 dotenv.load_dotenv("src/.env")
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-cred = credentials.Certificate("creds.json")
-firebase_admin.initialize_app(
-    cred,
-    options={
-        "storageBucket": os.getenv(
-            "FIREBASE_STORAGE_BUCKET", "slackbotai-60bac.firebasestorage.app"
-        )
-    }
-)
-
-
 app = App(signing_secret=os.getenv("SLACK_SIGNING_SECRET"), token=os.getenv("SLACK_APP_TOKEN"))
 client: WebClient = app.client
 
@@ -75,5 +60,4 @@ OAUTH_INTEGRATIONS = {
         secret_key=AUTH_SECRET_KEY
     ),
 }
-
-print(OAUTH_INTEGRATIONS["slack"].get_authorization_url())
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/3")

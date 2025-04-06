@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import Dict, List
+from langchain_core.messages import BaseMessage
 from typing import Optional, Union, Literal
 from pydantic import BaseModel
 
@@ -48,7 +49,7 @@ class PlatformHelper(ABC):
     @abstractmethod
     def get_chat_history(
         self, channel_id: str, limit: int = 10, thread_ts: str = None
-    ) -> Optional[List[Dict[str, str]]]:
+    ) -> Optional[List[BaseMessage]]:        
         ...
 
     @abstractmethod

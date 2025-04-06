@@ -5,7 +5,6 @@ langchain
 langchain-google-firestore
 langchain-google-vertexai
 youtube_transcript_api
-firebase_admin
 langchain_openai
 Beautifulsoup4
 google-auth-oauthlib
@@ -20,3 +19,5 @@ markdown_pdf
 html2text
 celery
 authlib
+fastapi[all]
+psycopg2-binary

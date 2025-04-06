@@ -1,10 +1,9 @@
-from typing import Any
-from ...database import DatabaseHelpers
+import redis
 from ...lib.platforms.platform_helper import PlatformHelper
 from .tool_maker import ToolMaker, ToolConfig
-from langchain_core.tools import Tool, tool
 from ..integrations.auth.oauth_handler import OAuthClient
-
+from langchain_core.tools import Tool, tool
+from sqlalchemy.orm import Session
 
 class GoogleOauthConfig(ToolConfig):
     ...
@@ -17,7 +16,8 @@ class GoogleOauthToolMaker(ToolMaker):
         tool_config: GoogleOauthConfig,
         platform_helper: PlatformHelper,
         oauth_integrations: dict[str, OAuthClient],
-        database_helpers: dict[DatabaseHelpers, Any],
+        session: Session,        
+        redis_client: redis.Redis,
     ):
         self.config = tool_config
         self.oauth_integrations = oauth_integrations
@@ -28,6 +28,7 @@ class GoogleOauthToolMaker(ToolMaker):
         def create_oauth_link():
             """
             Creates an OAuth link for the user to authenticate with Google.
+            Allows you to use other tools taht use google services.
             :return: OAuth link for the user to authenticate with Google.
             """
             link = self.oauth_integrations["google"].get_authorization_url(

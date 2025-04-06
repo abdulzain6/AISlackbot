@@ -1,7 +1,8 @@
 from duckduckgo_search import DDGS
-from typing import Any, List
+from typing import List
+import redis
+from sqlalchemy.orm import Session
 from langchain.tools import tool, Tool
-from ...database import DatabaseHelpers
 from ...lib.integrations.auth.oauth_handler import OAuthClient
 from ...lib.platforms.platform_helper import PlatformHelper
 from .tool_maker import ToolMaker, ToolConfig
@@ -10,7 +11,7 @@ import html2text
 
 
 class WebSearchConfig(ToolConfig):
-    ...
+    proxy: str | None = None
 
 class WebSearch(ToolMaker):
     def __init__(
@@ -18,9 +19,12 @@ class WebSearch(ToolMaker):
         tool_config: WebSearchConfig,
         platform_helper: PlatformHelper,
         oauth_integrations: dict[str, OAuthClient],
-        database_helpers: dict[DatabaseHelpers, Any],
+        session: Session,
+        redis_client: redis.Redis,
     ):
-        self.ddgs = DDGS()
+        self.ddgs = DDGS(
+            proxy=tool_config.proxy
+        )
     
     def search_results(self, query: str, max_results: int = 10) -> List[dict]:
         return list(self.ddgs.text(query, max_results=max_results))

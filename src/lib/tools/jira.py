@@ -1,10 +1,10 @@
 import logging
+import redis
+from sqlalchemy.orm import Session
 from langchain_core.tools import Tool, tool
-from typing import Any
 from ...lib.integrations.auth.oauth_handler import OAuthClient
 from ...lib.platforms.platform_helper import PlatformHelper, TextFormElement
-from ...database import DatabaseHelpers
-from ...database.api_keystore import APIKey, APIKeyRepository
+from ...database.api_keystore import APIKey
 from .tool_maker import ToolMaker, ToolConfig
 from atlassian import Jira
 
@@ -16,7 +16,6 @@ class InvalidKeyException(Exception): ...
 
 
 class JiraTools(ToolMaker):
-    REQUESTED_DATABASE_HELPERS = [DatabaseHelpers.API_KEY_REPOSITORY]
     REQUESTED_OAUTH_INTEGRATIONS = []
 
     def __init__(
@@ -24,11 +23,10 @@ class JiraTools(ToolMaker):
         tool_config: JiraConfig,
         platform_helper: PlatformHelper,
         oauth_integrations: dict[str, OAuthClient],
-        database_helpers: dict[DatabaseHelpers, Any],
+        session: Session,
+        redis_client: redis.Redis,
     ):
-        self.api_key_repository: APIKeyRepository = database_helpers[
-            DatabaseHelpers.API_KEY_REPOSITORY
-        ]
+        self.session = session
         self.platform_helper = platform_helper
 
     def send_api_key_request_form(self):
@@ -328,7 +326,8 @@ class JiraTools(ToolMaker):
         @tool
         def search_jira_users(query: str):
             "Used to search for users in Jira."
-            key = self.api_key_repository.read_key(
+            key = APIKey.read(
+                self.session,
                 team_id=self.platform_helper.team_id,
                 app_name=self.platform_helper.platform_name,
                 integration_name="jira",
@@ -347,7 +346,8 @@ class JiraTools(ToolMaker):
         @tool
         def get_available_jira_projects_and_issue_types():
             "Used to get all available Jira projects and issue types."
-            key = self.api_key_repository.read_key(
+            key = APIKey.read(
+                self.session,
                 team_id=self.platform_helper.team_id,
                 app_name=self.platform_helper.platform_name,
                 integration_name="jira",
@@ -366,7 +366,8 @@ class JiraTools(ToolMaker):
         @tool
         def search_jira_issues(jql: str, add_description: bool = False):
             "Used to search for jira issues, it returns only 5 results max. Takes in jql query as input."
-            key = self.api_key_repository.read_key(
+            key = APIKey.read(
+                self.session,
                 team_id=self.platform_helper.team_id,
                 app_name=self.platform_helper.platform_name,
                 integration_name="jira",
@@ -396,7 +397,8 @@ class JiraTools(ToolMaker):
             assignee_account_id: str = None,
         ):
             "Used to create a new issue in Jira."
-            key = self.api_key_repository.read_key(
+            key = APIKey.read(
+                self.session,
                 team_id=self.platform_helper.team_id,
                 app_name=self.platform_helper.platform_name,
                 integration_name="jira",
@@ -422,7 +424,8 @@ class JiraTools(ToolMaker):
         @tool
         def delete_jira_issue(issue_key: str):
             "Used to delete a Jira issue."
-            key = self.api_key_repository.read_key(
+            key = APIKey.read(
+                self.session,
                 team_id=self.platform_helper.team_id,
                 app_name=self.platform_helper.platform_name,
                 integration_name="jira",
@@ -450,7 +453,7 @@ class JiraTools(ToolMaker):
 
 if __name__ == "__main__":
     jira = JiraTools(
-        JiraConfig(), None, {}, {DatabaseHelpers.API_KEY_REPOSITORY: APIKeyRepository()}
+        JiraConfig(), None, {}
     )
     print(
         jira.delete_issue(

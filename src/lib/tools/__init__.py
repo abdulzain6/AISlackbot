@@ -1,6 +1,10 @@
 from enum import Enum
+import os
 from typing import List, Type
 
+import redis
+from ...database.engine import SessionLocal
+from ..platforms import Platform, platform_helper_factory
 from ...globals import OAUTH_INTEGRATIONS
 from .web_search import WebSearch, WebSearchConfig
 from .report_generator import ReportGenerator, ReportGeneratorConfig
@@ -9,8 +13,6 @@ from .meets import MeetsHandler, MeetsConfig
 from .google import GoogleOauthToolMaker, GoogleOauthConfig
 from .jira import JiraConfig, JiraTools
 from langchain.tools import Tool
-from ...database import DATABASE_HELPER_MAP
-from ..platforms import Platform, platform_helper_factory
 
 
 class ToolName(Enum):
@@ -33,18 +35,15 @@ tool_name_to_cls: dict[ToolName, tuple[Type[ToolMaker], Type[ToolConfig]]] = {
 def get_all_tools(
     toolnames_to_args: dict[ToolName, dict], platform: Platform, platform_args: dict
 ) -> List[Tool]:
+    
     tools = []
+    platform_helper = platform_helper_factory(platform, platform_args)
     for tool_name, args in toolnames_to_args.items():
         if tool_name not in tool_name_to_cls:
             continue
 
         tool_cls, tool_config_cls = tool_name_to_cls.get(tool_name)
         if tool_cls:
-            database_helpers = {
-                helper: DATABASE_HELPER_MAP[helper]()
-                for helper in tool_cls.REQUESTED_DATABASE_HELPERS
-            }
-
             oauth_integrations = {
                 integration_name: OAUTH_INTEGRATIONS[integration_name]
                 for integration_name in tool_cls.REQUESTED_OAUTH_INTEGRATIONS
@@ -52,9 +51,10 @@ def get_all_tools(
             tools.extend(
                 tool_cls(
                     tool_config=tool_config_cls.model_validate(args),
-                    database_helpers=database_helpers,
                     oauth_integrations=oauth_integrations,
-                    platform_helper=platform_helper_factory(platform, platform_args),
+                    platform_helper=platform_helper,
+                    session=SessionLocal(),
+                    redis_client=redis.Redis.from_url(f"{os.getenv("REDIS_URL")}/3")
                 ).create_ai_tools()
             )
     return tools

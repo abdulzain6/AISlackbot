@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Optional, TypedDict
+from langchain_core.messages import BaseMessage
 from langchain.chat_models.base import BaseChatModel
 from langgraph.prebuilt import create_react_agent
 from langchain_core.tools import Tool
@@ -47,10 +48,10 @@ Before doing anything message the user that you have started working on the task
 If you are unsure about something, ask the user for clarification.
 For jira related tasks, always call get_available_jira_projects_and_issue_types to get project info, search_jira_users can be used to find account ids of users.
 You can run jql to get issue information.
+You must always call send_starter_message before starting the task to send acknowledgement message to the user.
 """
 
-    def chat(self, tools: list[Tool], conversation: list[str]) -> str:
-        convo_string = "\n".join(conversation)
+    def chat(self, tools: list[Tool], messages: list[BaseMessage]) -> str:
         agent = create_react_agent(
             model=self.llm,
             tools=tools + self.tools,
@@ -60,16 +61,7 @@ You can run jql to get issue information.
             {
                 "messages": [
                     {"role": "system", "content": self.make_system_prompt()},
-                    {
-                        "role": "user",
-                        "content": f"""
-                        For long haul tasks call update_user_about_task_progress to update the user about the progress.
-                        Conversation between team:
-                        ==================          
-                        {convo_string}
-                        ==================
-                        AI:""",
-                    },
+                    *messages
                 ]
             }
         )["messages"][-1].content

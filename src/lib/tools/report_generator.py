@@ -1,17 +1,18 @@
+import secrets
 import tempfile
 import os
 import uuid
 
-from typing import Any
+import redis
+from sqlalchemy.orm import Session 
 from markdown_pdf import Section, MarkdownPdf
 from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool, Tool
-from ...database import DatabaseHelpers
 from ...lib.integrations.auth.oauth_handler import OAuthClient
 from ...lib.platforms.platform_helper import PlatformHelper
 from .tool_maker import ToolMaker, ToolConfig
-from ...database.data_store import FirebaseStorageHandler
+from ...database.data_store import FileStorage
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 
@@ -46,7 +47,6 @@ class ReportGeneratorConfig(ToolConfig):
 
 
 class ReportGenerator(ToolMaker):
-    REQUESTED_DATABASE_HELPERS = [DatabaseHelpers.DATA_STORE]
     REQUESTED_OAUTH_INTEGRATIONS = []
 
     def __init__(
@@ -54,12 +54,14 @@ class ReportGenerator(ToolMaker):
         tool_config: ReportGeneratorConfig,
         platform_helper: PlatformHelper,
         oauth_integrations: dict[str, OAuthClient],
-        database_helpers: dict[DatabaseHelpers, Any],
+        session: Session,
+        redis_client: redis.Redis,
     ):
         self.storage_prefix = tool_config.storage_prefix
         llm = tool_config.llm_conf.to_llm()
         self.llm = llm.with_structured_output(Report)
-        self.storage: FirebaseStorageHandler = database_helpers[DatabaseHelpers.DATA_STORE]
+        self.session = session
+        self.redis_client = redis_client
 
     def generate_report(self, data: str) -> Report:
         prompt = [
@@ -85,13 +87,16 @@ Use easy to understand language and avoid making it too long."""
             pdf.save(temp_path)
         # Upload to the storage and get the link
         try:
-            link = self.storage.upload_file(
-                temp_path, self.storage_prefix + f"{uuid.uuid4()}.pdf"
+            id = FileStorage.upload_file(
+                self.session, temp_path
             )
+            # Store the file path in Redis with a TTL of 1 hour
+            rand_path = secrets.token_hex(16)
+            self.redis_client.setex(id, 3600, rand_path)
         finally:
             os.remove(temp_path)  # Clean up the temporary file
 
-        return link
+        return f"{os.getenv('API_SERVER')}/file/{rand_path}"
 
     def create_ai_tools(self) -> list[Tool]:
         @tool
@@ -127,27 +132,3 @@ Use easy to understand language and avoid making it too long."""
 
         return [generate_report]
 
-
-def main():
-    from langchain_openai import ChatOpenAI
-
-    llm = ChatOpenAI(model="gpt-4o")
-
-    storage = FirebaseStorageHandler()  # Replace with actual initialization
-
-    report_generator = ReportGenerator(
-        llm=llm, storage=storage, storage_prefix="test/reports/"
-    )
-
-    # Sample data for report generation
-    sample_data = "Make report on tesla stock"
-    report = report_generator.generate_report(sample_data)
-
-    # Create PDF and upload
-    storage_link = report_generator.report_to_pdf(report)
-    print(f"Report uploaded to: {storage_link}")
-
-
-# This block prevents `main` from running if the script is imported
-if __name__ == "__main__":
-    main()

@@ -1,8 +1,10 @@
 from ..lib.platforms import Platform
 from ..lib.tools import ToolName
-from ..database.api_keystore import APIKeyRepository, APIKey
+from ..database.api_keystore import APIKey
+from sqlalchemy.orm import Session
 from typing import Tuple
 from atlassian import Jira
+
 
 def verify_jira_api_key(api_key: str, jira_domain: str, jira_email: str) -> Tuple[bool, str]:
     """
@@ -25,7 +27,9 @@ def verify_jira_api_key(api_key: str, jira_domain: str, jira_email: str) -> Tupl
     except Exception as e:
         return False, f"Error verifying API key: {str(e)}"
 
+
 def upsert_jira_key(
+    session: Session,
     team_id: str,
     user_id: str,
     app_name: Platform,
@@ -47,16 +51,14 @@ def upsert_jira_key(
         raise ValueError(f"Invalid Jira API key: {message}")
 
     # If verification succeeds, store the key
-    APIKeyRepository().create_key(
-        APIKey(
-            user_id=None,
-            team_id=team_id,
-            integration_name=ToolName.JIRA.value.lower(),
-            app_name=app_name.value.lower(),
-            api_key=api_key,
-            metadata={"jira_domain" : jira_domain, "jira_email": jira_email}
-        )
-    )
+    APIKey(
+        user_id=None,
+        team_id=team_id,
+        integration_name=ToolName.JIRA.value.lower(),
+        app_name=app_name.value.lower(),
+        api_key=api_key,
+        metadata={"jira_domain" : jira_domain, "jira_email": jira_email}
+    ).save(session)
 
     return {"status": "success", "message": "Jira API key verified and stored successfully"}
 
