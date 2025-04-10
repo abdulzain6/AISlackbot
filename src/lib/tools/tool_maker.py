@@ -1,10 +1,10 @@
 from abc import ABC, abstractmethod
 from langchain_core.tools import Tool
 from pydantic import BaseModel
-import redis
 from sqlalchemy.orm import Session
 from ...lib.integrations.auth.oauth_handler import OAuthClient
 from ...lib.platforms.platform_helper import PlatformHelper
+import redis
 
 
 class ToolConfig(BaseModel):

@@ -1,3 +1,12 @@
+import os
+import logging, dotenv
+import redis
+from fastapi.responses import StreamingResponse
+from io import BytesIO
+
+dotenv.load_dotenv("src/.env.api")
+
+from .database.data_store import FileStorage
 from .database.engine import get_db
 from .database.oauth_tokens import OAuthTokens
 from .database.slack_tokens import SlackToken
@@ -6,11 +15,11 @@ from .globals import OAUTH_INTEGRATIONS
 from sqlalchemy.orm import Session
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.responses import JSONResponse
-import logging, dotenv
+from fastapi import HTTPException
 
 
 
-dotenv.load_dotenv("src/.env.api")
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -96,3 +105,65 @@ def google_oauth_callback(code: str, state: str, session: Session = Depends(get_
     except Exception as e:
         logger.error(f"Error in OAuth callback: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error handling callback: {str(e)}")
+    
+
+@app.get("/file/{file_id}")
+def get_uploaded_file(file_id: str, session: Session = Depends(get_db)):
+    try:
+        # Connect to Redis
+        redis_client = redis.Redis.from_url(f"{os.getenv('REDIS_URL')}/3")
+
+        # Check if the file ID is cached in Redis
+        cached_file_id = redis_client.get(file_id)
+        if not cached_file_id:
+            logger.error(f"File not found in cache for ID: {file_id}")
+            raise HTTPException(status_code=404, detail="File not found in cache")
+
+        # Retrieve the file details from the database
+        file = FileStorage.get_file_by_id(session, cached_file_id.decode("utf-8"))
+        if not file:
+            logger.error(f"File not found in database for ID: {file_id}")
+            raise HTTPException(status_code=404, detail="File not found")
+
+        # Ensure the file_data contains the actual file's content as bytes
+        file_bytes = file.file_data
+        if not file_bytes or not isinstance(file_bytes, bytes):
+            logger.error(f"File data is missing or invalid for file ID: {file_id}")
+            raise HTTPException(status_code=404, detail="File data is missing or invalid")
+
+        # Determine the correct MIME type
+        file_mime_type = "application/octet-stream"  # Default MIME type
+        if file.file_name.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg")):
+            logger.info(f"File appears to be an image: {file.file_name}")
+            if file.file_name.lower().endswith(".png"):
+                file_mime_type = "image/png"
+            elif file.file_name.lower().endswith((".jpg", ".jpeg")):
+                file_mime_type = "image/jpeg"
+            elif file.file_name.lower().endswith(".gif"):
+                file_mime_type = "image/gif"
+            elif file.file_name.lower().endswith(".bmp"):
+                file_mime_type = "image/bmp"
+            elif file.file_name.lower().endswith(".webp"):
+                file_mime_type = "image/webp"
+            elif file.file_name.lower().endswith(".svg"):
+                file_mime_type = "image/svg+xml"
+
+            # For images, do not include the "attachment" disposition to allow browser view
+            content_disposition = f"inline; filename={file.file_name}"
+        else:
+            # For non-image files, force download
+            content_disposition = f"attachment; filename={file.file_name}"
+
+        # Return the file as a streaming response
+        file_stream = BytesIO(file_bytes)
+        logger.info(f"Successfully retrieved file: {file.file_name}")
+        return StreamingResponse(
+            file_stream,
+            media_type=file_mime_type,
+            headers={"Content-Disposition": content_disposition}
+        )
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions for proper status codes
+    except Exception as e:
+        logger.error(f"Error retrieving file: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Error retrieving file")

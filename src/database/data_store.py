@@ -41,3 +41,18 @@ class FileStorage(Base):
             raise e
         finally:
             session.close()
+
+    def upload_file_from_blob(session: Session, file_bytes: bytes, file_name: str) -> str:
+        try:
+            if len(file_bytes) > 1 * 1024 * 1024 * 1024:
+                raise ValueError("File size exceeds 1GB limit")
+            generated_id = secrets.token_urlsafe(32)
+            new_file = FileStorage(id=generated_id, file_name=file_name, file_data=file_bytes)
+            session.add(new_file)
+            session.commit()
+            return new_file.id
+        except Exception as e:
+            session.rollback()
+            raise e
+        finally:
+            session.close()

@@ -1,8 +1,9 @@
-from enum import Enum
-import os
-from typing import List, Type
-
 import redis
+import os
+
+from typing import List, Type
+from enum import Enum
+from .uml_diagram_maker import AIPlantUMLGenerator
 from ...database.engine import SessionLocal
 from ..platforms import Platform, platform_helper_factory
 from ...globals import OAUTH_INTEGRATIONS
@@ -21,6 +22,7 @@ class ToolName(Enum):
     GOOGLE_MEETS = "google_meets"
     GOOGLE_OAUTH = "google_oauth"
     JIRA = "jira"
+    UML_DIAGRAM_MAKER = "uml_diagram_maker"
 
 
 tool_name_to_cls: dict[ToolName, tuple[Type[ToolMaker], Type[ToolConfig]]] = {
@@ -28,7 +30,8 @@ tool_name_to_cls: dict[ToolName, tuple[Type[ToolMaker], Type[ToolConfig]]] = {
     ToolName.REPORT_GENERATOR: (ReportGenerator, ReportGeneratorConfig),
     ToolName.GOOGLE_MEETS: (MeetsHandler, MeetsConfig),
     ToolName.GOOGLE_OAUTH: (GoogleOauthToolMaker, GoogleOauthConfig),
-    ToolName.JIRA: (JiraTools, JiraConfig)
+    ToolName.JIRA: (JiraTools, JiraConfig),
+    ToolName.UML_DIAGRAM_MAKER: (AIPlantUMLGenerator, ToolConfig),
 }
 
 
@@ -54,7 +57,7 @@ def get_all_tools(
                     oauth_integrations=oauth_integrations,
                     platform_helper=platform_helper,
                     session=SessionLocal(),
-                    redis_client=redis.Redis.from_url(f"{os.getenv("REDIS_URL")}/3")
+                    redis_client=redis.Redis.from_url(f"{os.getenv('REDIS_URL')}/3")
                 ).create_ai_tools()
             )
     return tools

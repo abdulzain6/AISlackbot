@@ -12,7 +12,7 @@ import logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 app = Celery(
-    "tasks", broker=f"{os.getenv("REDIS_URL")}/0", backend=f"{os.getenv("REDIS_URL")}/1"
+    "tasks", broker=f"{os.getenv('REDIS_URL')}/0", backend=f"{os.getenv('REDIS_URL')}/1"
 )
 app.conf.update(
     task_serializer="pickle", result_serializer="pickle", accept_content=["pickle"]

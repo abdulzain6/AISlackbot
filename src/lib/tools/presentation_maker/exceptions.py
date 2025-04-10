@@ -1,0 +1,2 @@
+class NoValidSequenceException(Exception):
+    pass

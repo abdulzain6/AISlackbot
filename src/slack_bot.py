@@ -36,6 +36,7 @@ def handle_message_events(body):
         text = event.get("text", "")
         team_id = body.get("team_id", "")
         thread_ts = event.get("thread_ts")
+        message_ts = event.get("ts") 
         is_direct_message = channel_id.startswith("D")
         bot_id = body.get("authorizations", [{}])[0].get("user_id", "")
         bot_mentioned = f"<@{bot_id}>" in text if bot_id else False
@@ -67,7 +68,13 @@ def handle_message_events(body):
             return
 
         token = token_obj.bot_access_token
-        platform_args = {"slack_token": token, "user_id": user_id}
+        platform_args = {
+            "token": token,
+            "user_id": user_id,
+            "thread_ts": thread_ts,
+            "message_ts": message_ts,
+            "channel_id": channel_id,
+        }
         helper = SlackHelper.from_token(
             token=token, user_id=user_id, redis=redis.Redis.from_url(REDIS_URL)
         )
@@ -126,6 +133,7 @@ def handle_message_events(body):
                     ToolName.GOOGLE_MEETS: {},
                     ToolName.GOOGLE_OAUTH: {},
                     ToolName.JIRA: {},
+                    ToolName.UML_DIAGRAM_MAKER: {},
                 }
                 logging.info(f"Tools configuration set up: {tools_dict}")
                 logging.info(

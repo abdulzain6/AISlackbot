@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres
+    environment:
+      POSTGRES_PASSWORD: password
+    network_mode: host
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis
+    network_mode: host
+    volumes:
+      - redisdata:/data
+
+volumes:
+  pgdata:
+  redisdata:

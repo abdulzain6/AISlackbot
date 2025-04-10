@@ -1,7 +1,6 @@
 import secrets
 import tempfile
 import os
-import uuid
 
 import redis
 from sqlalchemy.orm import Session 
@@ -90,9 +89,8 @@ Use easy to understand language and avoid making it too long."""
             id = FileStorage.upload_file(
                 self.session, temp_path
             )
-            # Store the file path in Redis with a TTL of 1 hour
             rand_path = secrets.token_hex(16)
-            self.redis_client.setex(id, 3600, rand_path)
+            self.redis_client.setex(rand_path, 3600, id)
         finally:
             os.remove(temp_path)  # Clean up the temporary file
 

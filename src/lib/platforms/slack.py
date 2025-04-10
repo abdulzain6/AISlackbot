@@ -1,3 +1,4 @@
+from io import IOBase
 import re
 import logging
 import json
@@ -6,16 +7,25 @@ import redis
 from slack_sdk.web import WebClient
 from slack_sdk.errors import SlackApiError
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from typing import Optional
 from .platform_helper import PlatformHelper, FormElement
-
+from markdown2slack.app import Convert
 
 
 class SlackHelper(PlatformHelper):
     platform_name = "slack"
 
-    def __init__(self, client: WebClient, redis: Redis, user_id: str = None, init_auth: bool = True):
+    def __init__(
+        self,
+        client: WebClient,
+        redis: Redis,
+        user_id: str = None,
+        init_auth: bool = True,
+        channel_id: str = None,
+        thread_ts: str = None,
+        message_ts: str = None,
+    ):
         """
         Initialize SlackHelper with a Slack WebClient and optionally a user ID.
         Automatically retrieves and stores the team ID upon initialization.
@@ -23,11 +33,17 @@ class SlackHelper(PlatformHelper):
         self.client = client
         self.redis = redis
         self._user_id = user_id
+        self.thread_ts = thread_ts
+        self.message_ts = message_ts
+        self.channel_id = channel_id
+
         if init_auth:
             auth_info = self._get_auth_info()
             self.bot_id = auth_info.get("bot_id")
-            self._team_id = auth_info.get("team_id") 
-            logging.info(f"TeamID: {self.team_id} BotID: {self.bot_id} Auth Test: {auth_info}")
+            self._team_id = auth_info.get("team_id")
+            logging.info(
+                f"TeamID: {self.team_id} BotID: {self.bot_id} Auth Test: {auth_info}"
+            )
         else:
             self.bot_id = None
             self._team_id = None
@@ -51,7 +67,7 @@ class SlackHelper(PlatformHelper):
             return None
         logging.error(f"Failed to retrieve users list: {response.get('error')}")
         return None
-    
+
     @property
     def user_id(self) -> str:
         return self._user_id
@@ -62,7 +78,7 @@ class SlackHelper(PlatformHelper):
             auth_info = self._get_auth_info()
             self.bot_id = auth_info.get("bot_id")
             self._team_id = auth_info.get("team_id")
-            
+
         return self._team_id
 
     def _get_auth_info(self) -> Optional[str]:
@@ -75,53 +91,119 @@ class SlackHelper(PlatformHelper):
             return response
         else:
             raise ValueError(f"Failed to get auth info: {response['error']}")
-        
+
     def convert_to_slack_markdown(self, text: str) -> str:
         """Convert Markdown links to Slack's format"""
-        return re.sub(
-            r"\[([^\]]+)\]\(([^)]+)\)", lambda m: f"<{m.group(2)}|{m.group(1)}>", text
+        converter = Convert()
+        return converter.markdown_to_slack_format(text)
+
+    def to_block(self, message: str) -> List[Dict[str, Any]]:
+        """
+        Convert a message to a Slack block kit format.
+        Removes asterisks if they are not rendering correctly for emphasis.
+        """
+        # Removing `**` used for bold if Slack Markdown doesn't handle it well
+        text_without_asterisks = message.replace("**", "")
+
+        # If further formatting is needed, it can be added here. For now, just remove the bold.
+        converted_message = self.convert_to_slack_markdown(
+            text_without_asterisks.strip()
         )
 
-    def to_block(self, message: str) -> List[Dict[str, Any]]:
-        """
-        Convert a message to a Slack block kit format.
-        Removes asterisks if they are not rendering correctly for emphasis.
-        """
-        # Removing `**` used for bold if Slack Markdown doesn't handle it well
-        text_without_asterisks = message.replace('**', '')
-
-        # If further formatting is needed, it can be added here. For now, just remove the bold.
-        converted_message = self.convert_to_slack_markdown(text_without_asterisks.strip())
-
-        return [
-            {"type": "section", "text": {"type": "mrkdwn", "text": converted_message}},
-        ]
-    
-    def to_block(self, message: str) -> List[Dict[str, Any]]:
-        """
-        Convert a message to a Slack block kit format.
-        Removes asterisks if they are not rendering correctly for emphasis.
-        """
-        # Removing `**` used for bold if Slack Markdown doesn't handle it well
-        text_without_asterisks = message.replace('**', '')
-
-        # If further formatting is needed, it can be added here. For now, just remove the bold.
-        converted_message = self.convert_to_slack_markdown(text_without_asterisks.strip())
-
         return [
             {"type": "section", "text": {"type": "mrkdwn", "text": converted_message}},
         ]
 
-    def send_message(self, channel_id: str, message: str, thread_ts: str = None):
+    def send_message(self, message: str, channel_id: str = None, thread_ts: str = None):
         """Send a message to a Slack channel with optional threading support"""
         try:
             self.client.chat_postMessage(
-                channel=channel_id, blocks=self.to_block(message), thread_ts=thread_ts
+                channel=channel_id or self.channel_id, 
+                blocks=self.to_block(message), 
+                thread_ts=thread_ts or self.thread_ts,
             )
             logging.info(f"Message successfully sent to channel {channel_id}")
         except SlackApiError as e:
             logging.error(
                 f"Error sending message to channel {channel_id}: {e.response['error']}"
+            )
+
+    def send_picture(self, image_url: str, alt_text: str, channel_id: str = None, thread_ts: str = None):
+        """Send a picture to a Slack channel with optional threading support"""
+        try:
+            # Build a Slack block with an image
+            image_block = [
+                {
+                    "type": "image",
+                    "image_url": image_url,
+                    "alt_text": alt_text,
+                }
+            ]
+
+            # Send the image as a message with the block
+            self.client.chat_postMessage(
+                channel=channel_id or self.channel_id,
+                blocks=image_block,
+                thread_ts=thread_ts or self.thread_ts,
+            )
+            logging.info(f"Picture successfully sent to channel {channel_id} with URL {image_url}")
+        except SlackApiError as e:
+            logging.error(
+                f"Error sending picture to channel {channel_id}: {e.response['error']}"
+            )
+
+    def send_picture_file(
+        self,
+        file: Optional[Union[str, bytes, IOBase]] = None,
+        title: Optional[str] = None,
+        channel_id: Optional[str] = None,
+        thread_ts: Optional[str] = None,
+        alt_txt: Optional[str] = None,
+        initial_comment: Optional[str] = None,
+        request_file_info: bool = True,
+        **kwargs,
+    ):
+        """
+        Send a picture file to a Slack channel and display a preview using the files_upload_v2 method.
+
+        Parameters:
+            file (str, bytes, IOBase): The file to upload. Can be a file path, raw bytes, or file-like object.
+            title (str): Title of the file shown in Slack.
+            channel_id (str): The Slack channel ID. Defaults to `self.channel_id` if not provided.
+            thread_ts (str): Thread timestamp to send the file in a thread. Defaults to `self.thread_ts` if not provided.
+            alt_txt (str): Alternative text for the image display.
+            initial_comment (str): Initial comment to accompany the uploaded file.
+            request_file_info (bool): Whether to request file info. Kept for compatibility as it is now optional.
+            kwargs: Additional parameters for the files_upload API method.
+        """
+        try:
+            # Upload the file using the Slack SDK's files_upload_v2 method
+            response = self.client.files_upload_v2(
+                file=file,
+                filename=title,  # Maps the title to filename for better display
+                title=title,  # Title displayed in Slack
+                channel=channel_id or self.channel_id,
+                    thread_ts=thread_ts or self.thread_ts,
+                initial_comment=initial_comment,
+                request_file_info=request_file_info,
+                alt_txt=alt_txt,
+                **kwargs,
+                )
+
+            # Log the details of the uploaded file for debugging purposes
+            file_id = response.get("file", {}).get("id")
+            if file_id:
+                logging.info(
+                    f"File successfully uploaded to channel {channel_id or self.channel_id} "
+                    f"with file ID {file_id} and title '{title}'"
+                )
+            else:
+                logging.warning("File uploaded but no file ID was retrieved from the response.")
+
+        except SlackApiError as e:
+            # Handle Slack API errors gracefully
+            logging.error(
+                f"Error uploading file to channel {channel_id or self.channel_id}: {e.response['error']}"
             )
 
     def send_dm(self, message: str):
@@ -185,16 +267,19 @@ class SlackHelper(PlatformHelper):
                 except Exception as e:
                     logging.error(f"Error fetching info for {cache_key}: {e}")
                     return {}
-            
+
             for message in messages:
-                content = message.get('text', '')
+                content = message.get("text", "")
                 cache_key = None
                 if "user" in message and "bot_id" not in message:
                     user_id = message["user"]
                     if user_id not in user_cache:
                         cache_key = f"slack:{self.team_id}:{user_id}"
                         user_cache[user_id] = fetch_and_cache_info(
-                            cache_key, lambda: self.client.users_info(user=user_id).get("user", {})
+                            cache_key,
+                            lambda: self.client.users_info(user=user_id).get(
+                                "user", {}
+                            ),
                         )
                     user_info = user_cache.get(user_id, {})
                     profile = user_info.get("profile", {})
@@ -211,7 +296,8 @@ class SlackHelper(PlatformHelper):
                     if bot_id not in bot_cache and bot_id != self.bot_id:
                         cache_key = f"slack:{self.team_id}:bot:{bot_id}"
                         bot_cache[bot_id] = fetch_and_cache_info(
-                            cache_key, lambda: self.client.bots_info(bot=bot_id).get("bot", {})
+                            cache_key,
+                            lambda: self.client.bots_info(bot=bot_id).get("bot", {}),
                         )
                     if bot_id == self.bot_id:
                         results.append(AIMessage(content=content))
@@ -225,13 +311,18 @@ class SlackHelper(PlatformHelper):
             if not thread_ts:
                 results.reverse()
 
-            logging.info(f"Successfully retrieved {len(results)} messages as Langchain objects")
+            logging.info(
+                f"Successfully retrieved {len(results)} messages as Langchain objects"
+            )
             return results
 
         except Exception as e:
             import traceback
+
             traceback.print_exc()
-            logging.error(f"Error retrieving chat history for channel {channel_id}: {e}")
+            logging.error(
+                f"Error retrieving chat history for channel {channel_id}: {e}"
+            )
             return None
 
     def send_form_dm(
@@ -241,7 +332,7 @@ class SlackHelper(PlatformHelper):
         title: str = "Please complete this form",
         metadata: dict = None,
         user_id: str = None,
-        extra_context: str = ""
+        extra_context: str = "",
     ) -> bool:
         """
         Send a form to a user via DM and return success status
@@ -350,5 +441,18 @@ class SlackHelper(PlatformHelper):
             return False
 
     @classmethod
-    def from_token(cls, token: str, user_id: str, redis: redis.Redis, init_auth: bool = True) -> "SlackHelper":
-        return SlackHelper(WebClient(token=token), redis=redis, user_id=user_id, init_auth=init_auth)
+    def from_token(
+        cls,
+        token: str,
+        user_id: str,
+        redis: redis.Redis,
+        init_auth: bool = True,
+        **kwargs,
+    ) -> "SlackHelper":
+        return SlackHelper(
+            WebClient(token=token),
+            redis=redis,
+            user_id=user_id,
+            init_auth=init_auth,
+            **kwargs,
+        )

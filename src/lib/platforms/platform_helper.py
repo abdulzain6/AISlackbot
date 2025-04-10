@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from io import IOBase
 from typing import Dict, List
 from langchain_core.messages import BaseMessage
 from typing import Optional, Union, Literal
@@ -38,7 +39,7 @@ class PlatformHelper(ABC):
 
     @abstractmethod
     def send_message(
-        self, channel_id: str, message: str, thread_ts: str = None
+        self, **kwargs
     ):
         ...
 
@@ -48,7 +49,7 @@ class PlatformHelper(ABC):
 
     @abstractmethod
     def get_chat_history(
-        self, channel_id: str, limit: int = 10, thread_ts: str = None
+        self, **kwargs
     ) -> Optional[List[BaseMessage]]:        
         ...
 
@@ -65,4 +66,17 @@ class PlatformHelper(ABC):
         """
         Send a form to a user via DM and return success status
         """
+        ...
+
+    @abstractmethod
+    def send_picture(self, image_url: str, alt_text: str, **kwargs):
+        ...
+
+    @abstractmethod
+    def send_picture_file(
+        self, 
+        file: Optional[Union[str, bytes, IOBase]], 
+        title: str, 
+        **kwargs
+    ):
         ...

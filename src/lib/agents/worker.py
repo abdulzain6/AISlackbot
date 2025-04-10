@@ -36,7 +36,6 @@ class AIAgent:
         )
         return f"""You are SlackAI, an AI agent developed to assist slack team members and help with productivity.
 If you are unable to complete a task, say 'I am unable to complete this task because ...' and explain why you are unable to complete the task.
-Note: Format any URLs using Slack markdown by enclosing the URL in angle brackets like this: <https://example.com|Click here>. This will render them as clickable hyperlinks in Slack.
 Additional Notes:
 {day_info}
 {self.additional_info}
