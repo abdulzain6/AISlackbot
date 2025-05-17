@@ -5,3 +5,4 @@ from .oauth_tokens import *
 from .slack_tokens import *
 from .user_files import *
 from .users import *
+from .ai_tasks import *

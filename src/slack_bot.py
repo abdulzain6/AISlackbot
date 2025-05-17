@@ -3,40 +3,49 @@ import logging
 import os
 import re
 import time
+import uuid
+import psycopg
 import redis
 
+from langchain_postgres import PostgresChatMessageHistory
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from slack_sdk.errors import SlackApiError
+from langchain_core.messages import HumanMessage
+from .lib.tools.image_generator import ImageGeneratorConfig
 from .lib.event_handlers import FORM_EVENT_HANDLERS
-from .lib.tools.report_generator import LLMConfig
-from .lib.agents.worker import WorkerConfig
+from .lib.models.llm import LLMConfig
 from .database.users import User
 from .database.slack_tokens import SlackToken
 from .database.engine import SessionLocal
 from .lib.tools import ToolName
 from .lib.platforms.slack import SlackHelper
 from .lib.platforms import Platform
-from .lib.tasks import perform_task
+from .lib.tasks import AgentConfig, perform_task
 from .globals import app, REDIS_URL
 
 
+redis_client = redis.Redis.from_url(
+    os.getenv("REDIS_URL", "redis://localhost:6379"), decode_responses=True
+)
+
+
 @app.event("message")
-def handle_message_events(body):
+def handle_message_events(body, say):
     """Handle message events with detailed logging, time tracking, and thread support, including bot mention detection"""
     start_time = time.time()  # Track the start time for execution
     logging.info("Event received: Processing message event")
+    logging.debug(f"Event body: {json.dumps(body, indent=2)}")
     session = SessionLocal()
 
     try:
-        process_start_time = time.time()
-        # Extract message details
         event = body.get("event", {})
         user_id = event.get("user")
         channel_id = event.get("channel")
         text = event.get("text", "")
         team_id = body.get("team_id", "")
         thread_ts = event.get("thread_ts")
-        message_ts = event.get("ts") 
+        message_ts = event.get("ts")
+        files = event.get("files", [])
         is_direct_message = channel_id.startswith("D")
         bot_id = body.get("authorizations", [{}])[0].get("user_id", "")
         bot_mentioned = f"<@{bot_id}>" in text if bot_id else False
@@ -46,25 +55,12 @@ def handle_message_events(body):
             f"team_id={team_id}, text={text}, is_direct_message={is_direct_message}, "
             f"bot_mentioned={bot_mentioned}, thread_ts={thread_ts}"
         )
-        logging.info(
-            f"Extraction complete in {time.time() - process_start_time:.2f} seconds"
-        )
 
-        validation_start_time = time.time()
-        if not is_direct_message and not bot_mentioned:
-            logging.info(
-                "Message is not a direct message and bot is not mentioned. Ignoring."
-            )
-            return
-        logging.info(
-            f"Validation complete in {time.time() - validation_start_time:.2f} seconds"
-        )
-
-        token_retrieval_start_time = time.time()
-        # Retrieve bot token
         token_obj = SlackToken.read(session, team_id)
         if not token_obj:
-            logging.error(f"No token found for team {team_id}")
+            logging.info(
+                "No token found for the given team_id, unable to proceed with message processing."
+            )
             return
 
         token = token_obj.bot_access_token
@@ -79,54 +75,98 @@ def handle_message_events(body):
             token=token, user_id=user_id, redis=redis.Redis.from_url(REDIS_URL)
         )
 
-        logging.info(
-            f"Token retrieval complete in {time.time() - token_retrieval_start_time:.2f} seconds"
-        )
-        message_processing_start_time = time.time()
-        logging.info(
-            f"Message from user {user_id} in channel {channel_id} on team {team_id}: {text}"
-        )
+        # 1) Try cache lookup for user name
+        cache_key_name = f"user_name:{user_id}"
+        cache_key_email = f"user_email:{user_id}"
+
+        user_name = redis_client.get(cache_key_name)
+        email = redis_client.get(cache_key_email)
+
+        # 2) If missing, fetch from Slack API and cache
+        if (not user_name or not email) and user_id:
+            resp = helper.client.users_info(user=user_id)
+            if resp.get("ok"):
+                profile = resp.get("user", {}).get("profile", {})
+                user_name = (
+                    profile.get("display_name") or profile.get("real_name") or user_id
+                )
+                email = profile.get("email")
+
+                if not user_name:
+                    user_name = user_id
+
+                redis_client.set(cache_key_name, user_name, ex=86400)
+                if email:
+                    redis_client.set(cache_key_email, email, ex=86400)
+            else:
+                logging.warning(f"users.info failed for {user_id}: {resp.get('error')}")
+                user_name = user_id
+                email = None
+
+        # 3) Prepend the user’s name to the message text
+        email_message = f"({email})" if email else ""
+        text = f"{user_name} {email_message}: {text}"
+
+        if not token_obj:
+            logging.error(f"No token found for team {team_id}")
+            return
+
+        if not is_direct_message and not bot_mentioned:
+            sync_connection = psycopg.connect(
+                os.getenv("DATABASE_URL", "").replace("+psycopg", "")
+            )
+            chat_history = PostgresChatMessageHistory(
+                "chat_history",
+                str(
+                    uuid.uuid5(
+                        uuid.NAMESPACE_DNS,
+                        f"{channel_id}_{thread_ts}_{Platform.SLACK.value}_{team_id}",
+                    )
+                ),
+                sync_connection=sync_connection,
+            )
+            chat_history.create_tables(sync_connection, "chat_history")
+            chat_history.add_message(HumanMessage(content=text))
+
+            if files:
+                helper.send_message(
+                    "📂 I see you've uploaded some files! Would you like me to add them to your knowledgebase? 🤔 Please @ me if you want me to do that. This will allow me to answer questions based on the content of those files.",
+                    channel_id=channel_id,
+                    thread_ts=thread_ts,
+                )
+            else:
+                logging.info(
+                    "Message is not a direct message and bot is not mentioned. Ignoring."
+                )
+            return
 
         if user_id and "bot_id" not in event and text.strip() and team_id:
-            # Fetch chat history
             try:
-                chat_history_start_time = time.time()
-                logging.info("Fetching chat history")
-                history = helper.get_chat_history(channel_id, 10, thread_ts=thread_ts)
-                logging.info(
-                    f"Chat history retrieval completed in {time.time() - chat_history_start_time:.2f} seconds"
-                )
-                logging.info(f"Chat history retrieved: {len(history)}")
-                if not history:
-                    history = []
-
-                user_handling_start_time = time.time()
                 logging.info("Retrieving user from storage")
                 user = User.get_user(session, "slack", team_id, user_id)
                 if not user:
-                    logging.info(
-                        "User not found. Creating new user entry in Firestore storage"
-                    )
                     user = User(
                         app_team_id=team_id, app_user_id=user_id, app_name="slack"
                     ).upsert_user(session)
 
-                logging.info(
-                    f"User handling completed in {time.time() - user_handling_start_time:.2f} seconds"
+                files_message = (
+                    f"""
+                The user uploaded some files with this message.
+                File Names: {[file["name"] for file in files]}.
+                Note: There may be more files uploaded before this message, use you tools if you need to see them.
+                Respond accordingly, ask them if you can assist them with the files (important)
+                """
+                    if files
+                    else ""
                 )
 
-                tools_config_start_time = time.time()
-                # Setup tools and AI Agent configuration
                 tools_dict = {
                     ToolName.WEB_SEARCH: {"proxy": os.getenv("SEARCH_PROXY")},
                     ToolName.REPORT_GENERATOR: dict(
                         llm_conf=LLMConfig(
                             model_provider="openai",
-                            model="openrouter/quasar-alpha",
-                            llm_kwargs={
-                                "api_key": os.getenv("OPENROUTER_API_KEY"),
-                                "base_url": "https://openrouter.ai/api/v1",
-                            },
+                            model="gpt-4.1-mini-2025-04-14",
+                            llm_kwargs={"api_key": os.getenv("OPENAI_API_KEY", "")},
                         ),
                         storage_prefix=f"slack/{user.app_team_id}/{user.app_user_id}/",
                     ),
@@ -134,29 +174,49 @@ def handle_message_events(body):
                     ToolName.GOOGLE_OAUTH: {},
                     ToolName.JIRA: {},
                     ToolName.UML_DIAGRAM_MAKER: {},
+                    ToolName.PRESENTATION_MAKER: dict(
+                        llm_config=LLMConfig(
+                            model_provider="openai",
+                            model="gpt-4.1-mini-2025-04-14",
+                            llm_kwargs={
+                                "api_key": os.getenv("OPENAI_API_KEY", ""),
+                            },
+                        ),
+                        image_generator_config=ImageGeneratorConfig(
+                            replicate_api_key=os.getenv("REPLICATE_API_KEY", "")
+                        ),
+                    ),
+                    ToolName.IMAGE_GENERATOR: dict(
+                        replicate_api_key=os.getenv("REPLICATE_API_KEY")
+                    ),
+                    ToolName.KNOWLEDGEBASE_TOOLKIT: dict(
+                        llm_conf=LLMConfig(
+                            model_provider="openai",
+                            model="gpt-4.1-mini-2025-04-14",
+                            llm_kwargs={
+                                "api_key": os.getenv("OPENAI_API_KEY", ""),
+                            },
+                        ),
+                    ),
                 }
-                logging.info(f"Tools configuration set up: {tools_dict}")
-                logging.info(
-                    f"Tools configuration completed in {time.time() - tools_config_start_time:.2f} seconds"
-                )
 
-                task_execution_start_time = time.time()
-                # Perform task asynchronously
-                logging.info("Starting task execution")
-                perform_task.apply_async(
+                uploaded_images: list[bytes] = []
+                for file in files:
+                    if re.search(r'\.(jpg|jpeg|png|webp)$', file["name"], re.IGNORECASE):
+                        uploaded_images.append(helper.get_file_bytes(file["id"]))
+              
+                perform_task.apply_async(  # type: ignore
                     kwargs=dict(
-                        messages=history,
-                        worker_config=WorkerConfig(
+                        uploaded_images=uploaded_images,
+                        message=HumanMessage(content=text),
+                        worker_config=AgentConfig(
                             worker_tools_dict=tools_dict,
-                            worker_llm_config=LLMConfig(
+                            llm_config=LLMConfig(
                                 model_provider="openai",
-                                model="openrouter/quasar-alpha",
-                                llm_kwargs={
-                                    "api_key": os.getenv("OPENROUTER_API_KEY"),
-                                    "base_url": "https://openrouter.ai/api/v1",
-                                },
+                                model="gpt-4.1-mini-2025-04-14",
+                                llm_kwargs={"api_key": os.getenv("OPENAI_API_KEY", "")},
                             ),
-                            worker_additional_info="",
+                            orchestrator_additional_info=files_message,
                         ),
                         platform=Platform.SLACK,
                         platform_args=platform_args,
@@ -164,18 +224,10 @@ def handle_message_events(body):
                         thread_ts=thread_ts,
                     )
                 )
-                logging.info(
-                    f"Task execution triggered successfully in {time.time() - task_execution_start_time:.2f} seconds"
-                )
-
             except SlackApiError as e:
                 logging.error(
                     f"Error posting message: {e.response['error']}", exc_info=True
                 )
-
-        logging.info(
-            f"Message processing completed in {time.time() - message_processing_start_time:.2f} seconds"
-        )
 
     except Exception as e:
         logging.error(
@@ -184,7 +236,6 @@ def handle_message_events(body):
         )
 
     finally:
-        # Log the total elapsed time
         elapsed_time = time.time() - start_time
         logging.info(
             f"Message event processing completed in {elapsed_time:.2f} seconds"
@@ -192,10 +243,10 @@ def handle_message_events(body):
 
 
 @app.action(re.compile(r".*_submit$"))
-def handle_submit_button(ack, body, logger):
+def handle_form_submission(ack, body, logger):
     """Handle form submissions and extract submitted values into a dictionary"""
     ack()
-    logging.info(f"Processed form submission with response: {body}")
+    logging.debug(f"Processed form submission with response: {body}")
 
     user_id = body["user"]["id"]
     team_id = body["user"]["team_id"]
@@ -326,5 +377,5 @@ def entry_point():
 if __name__ == "__main__":
     # check_and_renew_watch_requests()
     # schedule.every().hour.do(check_and_renew_watch_requests)
-    print("Gmail Job scheduled!")
+    # print("Gmail Job scheduled!")
     entry_point()

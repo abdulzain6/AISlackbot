@@ -75,4 +75,14 @@ class TemplateDBManager:
 
     def get_template_file(self, template_name: str) -> Union[str, None]:
         doc = self.find_template_by_name(template_name)
+        if not doc:
+            return None
         return os.path.join(self.template_dir, doc.file_name)
+    
+
+    
+def make_template_db_manager(template_dir: str | None = None, templates_json_path: str = None) -> TemplateDBManager:
+    return TemplateDBManager(
+        template_dir=template_dir or DEFAULT_TEMPLATE_DIR, 
+        templates_json_path=templates_json_path or DEFAULT_TEMPLATES_JSON
+    )

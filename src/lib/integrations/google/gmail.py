@@ -189,7 +189,7 @@ class GmailHandler:
         return signature_info.get('signature', '')
 
     def send_email(
-        self, recipient: str, body: str, thread_id: str = None, message_id: str = None, subject: str = None
+        self, recipient: str, body: str, thread_id: str | None = None, message_id: str | None = None, subject: str = None
     ):
         service = build('gmail', 'v1', credentials=self.credentials)
 
@@ -407,7 +407,7 @@ def create_ai_tools_for_gmail(
             return f"Failed to get emails: Error: {e}"
 
     @tool
-    def send_email(recipient: str, body: str, thread_id: str = None, message_id: str = None, subject: str = None, sure: str = "") -> str:
+    def send_email(recipient: str, body: str, thread_id: str | None = None, message_id: str | None = None, subject: str | None = None, sure: str = "") -> str:
         """
         Send an email using the user's Gmail account.
 

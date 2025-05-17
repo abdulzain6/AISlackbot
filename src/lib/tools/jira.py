@@ -1,7 +1,7 @@
 import logging
 import redis
 from sqlalchemy.orm import Session
-from langchain_core.tools import Tool, tool
+from langchain_core.tools import BaseTool, tool
 from ...lib.integrations.auth.oauth_handler import OAuthClient
 from ...lib.platforms.platform_helper import PlatformHelper, TextFormElement
 from ...database.api_keystore import APIKey
@@ -17,6 +17,7 @@ class InvalidKeyException(Exception): ...
 
 class JiraTools(ToolMaker):
     REQUESTED_OAUTH_INTEGRATIONS = []
+    DESCRIPTION = """The ToolMaker allows interaction with Jira for managing issues, projects, and users. It provides tools for searching issues, creating and deleting issues, retrieving available project details, and requesting the Jira API key."""
 
     def __init__(
         self,
@@ -214,8 +215,8 @@ class JiraTools(ToolMaker):
         summary: str,
         project_key: str,
         issue_type: str,
-        description: str = None,
-        assignee_account_id: str = None,
+        description: str | None = None,
+        assignee_account_id: str | None = None,
     ):
         """
         Creates a new Jira issue with the provided details.
@@ -316,7 +317,7 @@ class JiraTools(ToolMaker):
     def delete_issue(self, jira: Jira, issue_key: str):
         return jira.delete_issue(issue_key)
 
-    def create_ai_tools(self) -> list[Tool]:
+    def create_ai_tools(self) -> list[BaseTool]:
 
         @tool
         def ask_owner_for_jira_api_key():
@@ -393,8 +394,8 @@ class JiraTools(ToolMaker):
             summary: str,
             project_key: str,
             issue_type: str,
-            description: str = None,
-            assignee_account_id: str = None,
+            description: str | None = None,
+            assignee_account_id: str | None = None,
         ):
             "Used to create a new issue in Jira."
             key = APIKey.read(
@@ -439,7 +440,7 @@ class JiraTools(ToolMaker):
             except InvalidKeyException:
                 return "Invalid Jira API Key. Please contact the owner to update the API Key."
 
-            return self.delete_issue(jira=jira, issue=issue_key)
+            return self.delete_issue(jira=jira, issue_key=issue_key)
 
         return [
             ask_owner_for_jira_api_key,

@@ -1,7 +1,8 @@
+import random
 from .pptx.enum.shapes import MSO_SHAPE_TYPE
 from .pptx import Presentation
 from .exceptions import NoValidSequenceException
-from .database import TemplateDBManager, TemplateModel, PlaceholderModel, SlideModel
+from .models import TemplateDBManager, TemplateModel, PlaceholderModel, SlideModel
 from ..image_generator import ImageGenerator
 from typing import Any, Optional, List, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -29,7 +30,7 @@ class PresentationInput(BaseModel):
     instructions: str
     number_of_pages: int
     negative_prompt: str
-    template_name: str
+    template_name: str | None = None
 
 
 class PlaceholderData(BaseModel):
@@ -635,14 +636,20 @@ Titles and subtitles must be even shorter only content placeholders can have mor
     @retry(stop_max_attempt_number=3)
     def make_presentation(
         self, presentation_input: PresentationInput
-    ) -> tuple[str, list[dict]]:
+    ) -> str:
+        
         logging.info("Fetching best template...")
         start_time = time.time()
         template_name = presentation_input.template_name
+        presentation_input.number_of_pages = min(presentation_input.number_of_pages, 20)
+        
+        if not template_name:
+            template_name = random.choice(self.template_manager.get_all_templates())
+
         slide_path = self.template_manager.get_template_file(template_name)
         template = self.template_manager.read_template(template_name)
 
-        if not slide_path:
+        if not slide_path or not template:
             raise ValueError("Template Not found!")
 
         for _ in range(3):
@@ -687,51 +694,11 @@ Titles and subtitles must be even shorter only content placeholders can have mor
         if os.path.exists(temp_ppt_path):
             os.remove(temp_ppt_path)
 
-        # Convert to .ppt using LibreOffice
-        subprocess.run(
-            [
-                "libreoffice",
-                "--headless",
-                "--convert-to",
-                "ppt",
-                "--outdir",
-                tempfile.gettempdir(),
-                temp_pptx_path,
-            ],
-            check=True,
-        )
-
-        if os.path.exists(temp_pptx_path):
-            os.remove(temp_pptx_path)
-
-        if not os.path.exists(temp_ppt_path):
-            raise FileNotFoundError(
-                f"Conversion failed, .ppt file not found at {temp_ppt_path}"
-            )
-
-        subprocess.run(
-            [
-                "libreoffice",
-                "--headless",
-                "--convert-to",
-                "pptx",
-                "--outdir",
-                tempfile.gettempdir(),
-                temp_ppt_path,
-            ],
-            check=True,
-        )
-
-        # Step 3: Confirm conversion and return path
-
         logging.info(
             f"Presentation saved and converted successfully. Time taken: {time.time() - start_time}"
         )
 
-        return temp_pptx_path, [
-            {**placeholders.dict(), **sequence.dict()}
-            for placeholders, sequence in zip(content, sequence.slide_sequence)
-        ]
+        return temp_pptx_path
 
     def replace_text_in_run(self, run, placeholders: List[CombinedPlaceholder]) -> None:
         for placeholder in placeholders:
@@ -746,29 +713,34 @@ Titles and subtitles must be even shorter only content placeholders can have mor
         self, shape, placeholders: List[CombinedPlaceholder]
     ) -> List[Tuple[str, int, int, int, int]]:
         new_shapes = []
-
         for placeholder in placeholders:
-            if placeholder.is_image:
-                image_bytes = self.image_generator.generate_image(
-                    prompt=placeholder.placeholder_data,
-                    negative_prompt="",
-                    width=placeholder.image_width,
-                    height=placeholder.image_height,
-                ).read()
+            try:
+                if placeholder.is_image:
+                    image_bytes = self.image_generator.generate_image(
+                        prompt=placeholder.placeholder_data,
+                        negative_prompt="",
+                        width=placeholder.image_width,
+                        height=placeholder.image_height,
+                    ).read()
 
-                # Create a temporary file
-                with tempfile.NamedTemporaryFile(
-                    delete=False, suffix=".png"
-                ) as temp_file:
-                    temp_file.write(image_bytes)
-                    temp_file_path = temp_file.name
+                    # Create a temporary file
+                    with tempfile.NamedTemporaryFile(
+                        delete=False, suffix=".png"
+                    ) as temp_file:
+                        temp_file.write(image_bytes)
+                        temp_file_path = temp_file.name
 
-                left = shape.left
-                top = shape.top
-                width = shape.width
-                height = shape.height
+                    # Add the new shape to the list
+                    logging.info(f"Adding image {temp_file_path} to slide")
+                    
+                    left = shape.left
+                    top = shape.top
+                    width = shape.width
+                    height = shape.height
 
-                new_shapes.append((temp_file_path, left, top, width, height))
+                    new_shapes.append((temp_file_path, left, top, width, height))
+            except Exception as e:
+                logging.error(f"Error generating image: {e}")
         return new_shapes
 
     def process_text_frame(

@@ -1,8 +1,10 @@
+import ipaddress
+from urllib.parse import urlparse
 from duckduckgo_search import DDGS
 from typing import List
 import redis
 from sqlalchemy.orm import Session
-from langchain.tools import tool, Tool
+from langchain.tools import tool, BaseTool
 from ...lib.integrations.auth.oauth_handler import OAuthClient
 from ...lib.platforms.platform_helper import PlatformHelper
 from .tool_maker import ToolMaker, ToolConfig
@@ -14,6 +16,10 @@ class WebSearchConfig(ToolConfig):
     proxy: str | None = None
 
 class WebSearch(ToolMaker):
+    DESCRIPTION: str = """
+Provides utilities to perform web search.
+"""
+
     def __init__(
         self, 
         tool_config: WebSearchConfig,
@@ -34,15 +40,39 @@ class WebSearch(ToolMaker):
     
     def http_get_request(self, url: str) -> str:
         try:
+            # Parse the URL to extract its components
+            parsed_url = urlparse(url)
+
+            # Prevent accessing private or local IP ranges
+            if parsed_url.hostname:
+                ip = None
+                try:
+                    ip = ipaddress.ip_address(parsed_url.hostname)
+                except ValueError:
+                    # Handle non-IP hostnames (e.g., domain names), which may resolve to private IPs.
+                    pass
+                
+                if ip:
+                    if ip.is_loopback or ip.is_private:  # Block localhost and private IP ranges
+                        return "Error: Accessing private or local network URLs is forbidden."
+
+            # Prevent `file://` protocol
+            if url.startswith("file://"):
+                return "Error: Accessing local files is forbidden by policy."
+
+            # Handle HTTP/HTTPS URLs
             response = requests.get(url, timeout=5)
             response.raise_for_status()
             html_content = response.text
             markdown_content = html2text.html2text(html_content)
             return markdown_content
         except requests.RequestException as e:
-            return "Error in get request"
+            return f"Error in HTTP GET request: {e}"
+        except Exception as e:
+            return f"Unexpected error: {e}"
     
-    def create_ai_tools(self) -> list[Tool]:
+   
+    def create_ai_tools(self) -> list[BaseTool]:
         @tool
         def search_text_tool(keywords: List[str], max_results_per_query: int = 5) -> List[dict]:
             """Search DuckDuckGo for text results based on a list of keywords."""
@@ -66,4 +96,3 @@ class WebSearch(ToolMaker):
                 return "Error opening page"
         
         return [search_text_tool, search_image_tool, http_get_tool]
-

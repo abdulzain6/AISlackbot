@@ -7,7 +7,7 @@ import requests
 from zlib import compress
 from typing import Dict, Optional, Any, Union
 from .tool_maker import ToolMaker, ToolConfig
-from langchain_core.tools import Tool, tool
+from langchain_core.tools import BaseTool, tool
 from sqlalchemy.orm import Session
 from graphviz import Source
 from ...lib.integrations.auth.oauth_handler import OAuthClient
@@ -179,6 +179,7 @@ class PlantUML:
 
 class AIPlantUMLGenerator(ToolMaker):
     REQUESTED_OAUTH_INTEGRATIONS: list[str] = []
+    DESCRIPTION: str = """Used to make diagrams including uml, graphs etc"""
 
     def __init__(
         self,
@@ -192,7 +193,7 @@ class AIPlantUMLGenerator(ToolMaker):
         self.session = session
         self.platform_helper = platform_helper
 
-    def create_ai_tools(self) -> list[Tool]:
+    def create_ai_tools(self) -> list[BaseTool]:
         @tool
         def generate_uml_diagram(plantuml_text: str, output_format: str = "png") -> str:
             """
@@ -206,8 +207,8 @@ class AIPlantUMLGenerator(ToolMaker):
                 else:
                     raise ValueError("Unsupported output format. Use 'svg' or 'png'.")
                 
-                self.platform_helper.send_picture_file(file=image_bytes, title="UML Diagram")
-                return "UML diagram has been generated and the user can see it. Do not send any URLs."
+                self.platform_helper.send_file(file=image_bytes, title="UML Diagram")
+                return "UML diagram has been generated and the user can see it. Tell him to see chat"
             except Exception as e:
                 return f"Error generating UML diagram: {e}"
             
@@ -219,7 +220,7 @@ class AIPlantUMLGenerator(ToolMaker):
             dot_code = self.extract_code(dot_code)
             dot = Source(dot_code)
             file_bytes = dot.pipe(format=output_format)
-            self.platform_helper.send_picture_file(file=file_bytes, title="Graphviz Diagram")
+            self.platform_helper.send_file(file=file_bytes, title="Graphviz Diagram")
             return "Graphviz diagram has been generated and the user can see it. Do not send any URLs."
 
 

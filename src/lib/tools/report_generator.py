@@ -1,19 +1,14 @@
-import secrets
 import tempfile
-import os
-
 import redis
 from sqlalchemy.orm import Session 
 from markdown_pdf import Section, MarkdownPdf
 from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel, Field
-from langchain_core.tools import tool, Tool
+from langchain_core.tools import tool, BaseTool
 from ...lib.integrations.auth.oauth_handler import OAuthClient
 from ...lib.platforms.platform_helper import PlatformHelper
 from .tool_maker import ToolMaker, ToolConfig
-from ...database.data_store import FileStorage
-from langchain.chat_models import init_chat_model
-from langchain_core.language_models import BaseChatModel
+from ..models.llm import LLMConfig
 
 
 class Report(BaseModel):
@@ -25,21 +20,6 @@ class Report(BaseModel):
     )
 
 
-class LLMConfig(BaseModel):
-    model_provider: str
-    model: str
-    llm_kwargs: dict[str, str] = {}
-
-    def to_llm(self) -> BaseChatModel:
-        init_params = {
-            "model_provider": self.model_provider,
-            "model": self.model,
-            **self.llm_kwargs
-        }
-        llm = init_chat_model(**init_params)
-        return llm
-
-
 class ReportGeneratorConfig(ToolConfig):
     llm_conf: LLMConfig
     storage_prefix: str
@@ -47,6 +27,7 @@ class ReportGeneratorConfig(ToolConfig):
 
 class ReportGenerator(ToolMaker):
     REQUESTED_OAUTH_INTEGRATIONS = []
+    DESCRIPTION = """Used to make reports in PDF format and return link."""
 
     def __init__(
         self, 
@@ -61,6 +42,7 @@ class ReportGenerator(ToolMaker):
         self.llm = llm.with_structured_output(Report)
         self.session = session
         self.redis_client = redis_client
+        self.platform_helper = platform_helper
 
     def generate_report(self, data: str) -> Report:
         prompt = [
@@ -79,24 +61,14 @@ Use easy to understand language and avoid making it too long."""
     def report_to_pdf(self, report: Report) -> str:
         pdf = MarkdownPdf(toc_level=3)
         pdf.add_section(Section(report.report_markdown), user_css=report.report_css)
-
-        # Save to a temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+        with tempfile.NamedTemporaryFile(delete=True, suffix=".pdf") as tmp_file:
             temp_path = tmp_file.name
             pdf.save(temp_path)
-        # Upload to the storage and get the link
-        try:
-            id = FileStorage.upload_file(
-                self.session, temp_path
-            )
-            rand_path = secrets.token_hex(16)
-            self.redis_client.setex(rand_path, 3600, id)
-        finally:
-            os.remove(temp_path)  # Clean up the temporary file
+            self.platform_helper.send_file(temp_path, "report.pdf")
 
-        return f"{os.getenv('API_SERVER')}/file/{rand_path}"
+        return f"Report generated and sent to the user, tell him he can see it in chat"
 
-    def create_ai_tools(self) -> list[Tool]:
+    def create_ai_tools(self) -> list[BaseTool]:
         @tool
         def generate_report(
             report_topic: str,

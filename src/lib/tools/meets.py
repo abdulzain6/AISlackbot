@@ -10,7 +10,7 @@ from ...lib.platforms.platform_helper import PlatformHelper
 from ...lib.integrations.auth.oauth_handler import OAuthClient
 from ...database.oauth_tokens import OAuthTokens
 from .tool_maker import ToolMaker, ToolConfig
-from langchain_core.tools import Tool
+from langchain_core.tools import BaseTool
 from sqlalchemy.orm import Session
 
 
@@ -23,7 +23,7 @@ class MeetsConfig(ToolConfig): ...
 
 class MeetsHandler(ToolMaker):
     REQUESTED_OAUTH_INTEGRATIONS = ["google"]
-
+    DESCRIPTION = """The toolmaker helps manage Google Calendar events and meetings, enabling creation, deletion, and listing of calendar events along with scheduling new meetings."""
     def __init__(
         self,
         tool_config: MeetsConfig,
@@ -256,7 +256,7 @@ class MeetsHandler(ToolMaker):
             logging.error(f"Failed to list events: {str(e)}")
             raise
 
-    def create_ai_tools(self) -> list[Tool]:
+    def create_ai_tools(self) -> list[BaseTool]:
 
         def handle_service_creation():
             """Handle service creation and authentication errors."""

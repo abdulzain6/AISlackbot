@@ -1,10 +1,10 @@
+import redis
 from abc import ABC, abstractmethod
-from langchain_core.tools import Tool
+from langchain_core.tools import BaseTool
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from ...lib.integrations.auth.oauth_handler import OAuthClient
 from ...lib.platforms.platform_helper import PlatformHelper
-import redis
 
 
 class ToolConfig(BaseModel):
@@ -13,6 +13,7 @@ class ToolConfig(BaseModel):
 
 class ToolMaker(ABC):
     REQUESTED_OAUTH_INTEGRATIONS: list[str] = []
+    DESCRIPTION: str
 
     @abstractmethod
     def __init__(
@@ -26,5 +27,5 @@ class ToolMaker(ABC):
         ...
 
     @abstractmethod
-    def create_ai_tools(self) -> list[Tool]:
+    def create_ai_tools(self) -> list[BaseTool]:
         ...

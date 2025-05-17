@@ -1,13 +1,15 @@
+from datetime import datetime
 from io import IOBase
 import re
 import logging
 import json
 from redis import Redis
 import redis
+import requests
 from slack_sdk.web import WebClient
 from slack_sdk.errors import SlackApiError
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 from typing import Optional
 from .platform_helper import PlatformHelper, FormElement
 from markdown2slack.app import Convert
@@ -20,11 +22,11 @@ class SlackHelper(PlatformHelper):
         self,
         client: WebClient,
         redis: Redis,
-        user_id: str = None,
+        user_id: str | None = None,
         init_auth: bool = True,
-        channel_id: str = None,
-        thread_ts: str = None,
-        message_ts: str = None,
+        channel_id: str | None = None,
+        thread_ts: str | None = None,
+        message_ts: str | None = None,
     ):
         """
         Initialize SlackHelper with a Slack WebClient and optionally a user ID.
@@ -81,6 +83,153 @@ class SlackHelper(PlatformHelper):
 
         return self._team_id
 
+    def get_recent_file_info(
+        self, channel_id: str | None = None, limit: int = 2
+    ) -> List[dict]:
+        """
+        Fetches the last `limit` messages from a channel and threads, and returns a list of file information.
+        Ensures filenames are unique by keeping only the latest file based on timestamp.
+
+        Args:
+            channel_id (str): ID of the Slack channel.
+            limit (int): Number of recent messages to scan. Default is 2.
+
+        Returns:
+            List[dict]: List of dictionaries containing file information. Each dictionary includes:
+                - name (str): The file name.
+                - id (str): The file ID.
+                - is_latest (bool): True if this is the latest file, False otherwise.
+                - message (str): "This is the latest file" for the latest, else an empty string.
+        """
+        file_info_dict = {}  # To store unique files with the latest timestamp
+        try:
+            # Fetch recent messages from the channel
+            response = self.client.conversations_history(
+                channel=channel_id if channel_id else self.channel_id,
+                limit=limit,
+            )
+            messages = response.get("messages", [])
+
+            for msg in messages:
+                # Check for files in the main message
+                if "files" in msg:
+                    for file in msg["files"]:
+                        timestamp = float(msg["ts"])
+                        file_name = file["name"]
+                        file_id = file["id"]
+
+                        # Update if the file_name is new or if there's a newer timestamp
+                        if file_name not in file_info_dict or timestamp > file_info_dict[file_name]["timestamp"]:
+                            file_info_dict[file_name] = {
+                                "name": file_name,
+                                "id": file_id,
+                                "timestamp": timestamp,
+                            }
+                # Check if the message starts a thread using `thread_ts`
+                if "thread_ts" in msg:
+                    thread_ts = msg["thread_ts"]
+
+                    # Fetch replies in the thread
+                    thread_replies = self.client.conversations_replies(
+                        channel=channel_id if channel_id else self.channel_id,
+                        ts=thread_ts,
+                    ).get("messages", [])
+
+                    for reply in thread_replies:
+                        if "files" in reply:
+                            for file in reply["files"]:
+                                timestamp = float(reply["ts"])
+                                file_name = file["name"]
+                                file_id = file["id"]
+
+                                # Update if the file_name is new or if there's a newer timestamp
+                                if file_name not in file_info_dict or timestamp > file_info_dict[file_name]["timestamp"]:
+                                    file_info_dict[file_name] = {
+                                        "name": file_name,
+                                        "id": file_id,
+                                        "timestamp": timestamp,
+                                    }
+
+        except Exception as e:
+            print(f"Error fetching files: {e}")
+
+        # Process the dictionary to add additional keys and return the final list
+        if file_info_dict:
+            latest_file_name = max(file_info_dict.values(), key=lambda x: x["timestamp"])["name"]
+
+        file_info_list = []
+        for file_details in file_info_dict.values():
+            is_latest = file_details["name"] == latest_file_name
+            file_info_list.append({
+                "name": file_details["name"],
+                "id": file_details["id"],
+                "is_latest": is_latest,
+                "message": "This is the latest file" if is_latest else "",
+            })
+
+        return file_info_list
+    
+    def get_file_bytes(self, file_id: str) -> bytes:
+        """
+        Retrieve the raw bytes of a file from Slack using its file ID.
+        Only supports text-based formats (e.g., .md, .json, .txt).
+        Raises an error if the file is not text-based or if it exceeds 20,000 bytes.
+        """
+        file_info = self._get_file_info(file_id)
+        file_name = file_info["name"]
+        file_size = file_info.get("size", 0)
+
+        max_size_bytes = 30 * 1024 * 1024  # 30 MB in bytes
+        if file_size > max_size_bytes:
+            raise ValueError(f"File {file_name} too large ({file_size} bytes)")
+
+        # Download the raw file
+        download_url = file_info.get("url_private_download") or file_info["url_private"]
+        headers = {"Authorization": f"Bearer {self.client.token}"}
+        r = requests.get(download_url, headers=headers)
+        if r.status_code != 200:
+            raise ValueError(
+                f"Failed to download file content: HTTP {r.status_code}"
+            )
+
+        return r.content
+
+    def read_file(self, file_id: str) -> str:
+        """
+        Read the content of a file from Slack using its file ID.
+        Only supports text-based formats (e.g., .md, .json, .txt).
+        Raises an error if the file is not text-based or if it exceeds 20,000 characters.
+        """
+        # Get the file bytes
+        file_bytes = self.get_file_bytes(file_id)
+
+        # Decode & final length check
+        try:
+            text = file_bytes.decode('utf-8')
+        except UnicodeDecodeError:
+            raise ValueError(f"Could not decode file as UTF‑8")
+
+        if len(text) > 20_000:
+            raise ValueError(f"File content exceeds 20,000 characters")
+
+        return text
+
+    def get_file_name(self, file_id: str) -> str:
+        """
+        Retrieve the name of a file from Slack using its file ID.
+        """
+        file_info = self._get_file_info(file_id)
+        return file_info["name"]
+
+    def _get_file_info(self, file_id: str) -> dict:
+        """
+        Helper method to fetch file metadata from Slack using its file ID.
+        """
+        resp = self.client.files_info(file=file_id)
+        if not resp["ok"]:
+            raise ValueError(f"Failed to fetch file info: {resp['error']}")
+        return resp["file"]
+
     def _get_auth_info(self) -> Optional[str]:
         """
         Retrieve the team ID using the auth.test endpoint.
@@ -114,12 +263,12 @@ class SlackHelper(PlatformHelper):
             {"type": "section", "text": {"type": "mrkdwn", "text": converted_message}},
         ]
 
-    def send_message(self, message: str, channel_id: str = None, thread_ts: str = None):
+    def send_message(self, message: str, channel_id: str | None = None, thread_ts: str = None):
         """Send a message to a Slack channel with optional threading support"""
         try:
             self.client.chat_postMessage(
-                channel=channel_id or self.channel_id, 
-                blocks=self.to_block(message), 
+                channel=channel_id if channel_id else self.channel_id,
+                blocks=self.to_block(message),
                 thread_ts=thread_ts or self.thread_ts,
             )
             logging.info(f"Message successfully sent to channel {channel_id}")
@@ -128,7 +277,13 @@ class SlackHelper(PlatformHelper):
                 f"Error sending message to channel {channel_id}: {e.response['error']}"
             )
 
-    def send_picture(self, image_url: str, alt_text: str, channel_id: str = None, thread_ts: str = None):
+    def send_picture(
+        self,
+        image_url: str,
+        alt_text: str,
+        channel_id: str | None = None,
+        thread_ts: str | None = None,
+    ):
         """Send a picture to a Slack channel with optional threading support"""
         try:
             # Build a Slack block with an image
@@ -142,17 +297,19 @@ class SlackHelper(PlatformHelper):
 
             # Send the image as a message with the block
             self.client.chat_postMessage(
-                channel=channel_id or self.channel_id,
+                channel=channel_id if channel_id else self.channel_id,
                 blocks=image_block,
                 thread_ts=thread_ts or self.thread_ts,
             )
-            logging.info(f"Picture successfully sent to channel {channel_id} with URL {image_url}")
+            logging.info(
+                f"Picture successfully sent to channel {channel_id} with URL {image_url}"
+            )
         except SlackApiError as e:
             logging.error(
                 f"Error sending picture to channel {channel_id}: {e.response['error']}"
             )
 
-    def send_picture_file(
+    def send_file(
         self,
         file: Optional[Union[str, bytes, IOBase]] = None,
         title: Optional[str] = None,
@@ -183,12 +340,12 @@ class SlackHelper(PlatformHelper):
                 filename=title,  # Maps the title to filename for better display
                 title=title,  # Title displayed in Slack
                 channel=channel_id or self.channel_id,
-                    thread_ts=thread_ts or self.thread_ts,
+                thread_ts=thread_ts or self.thread_ts,
                 initial_comment=initial_comment,
                 request_file_info=request_file_info,
                 alt_txt=alt_txt,
                 **kwargs,
-                )
+            )
 
             # Log the details of the uploaded file for debugging purposes
             file_id = response.get("file", {}).get("id")
@@ -198,7 +355,9 @@ class SlackHelper(PlatformHelper):
                     f"with file ID {file_id} and title '{title}'"
                 )
             else:
-                logging.warning("File uploaded but no file ID was retrieved from the response.")
+                logging.warning(
+                    "File uploaded but no file ID was retrieved from the response."
+                )
 
         except SlackApiError as e:
             # Handle Slack API errors gracefully
@@ -331,7 +490,7 @@ class SlackHelper(PlatformHelper):
         elements: list[FormElement],
         title: str = "Please complete this form",
         metadata: dict = None,
-        user_id: str = None,
+        user_id: str | None = None,
         extra_context: str = "",
     ) -> bool:
         """

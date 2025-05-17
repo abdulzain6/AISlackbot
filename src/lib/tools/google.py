@@ -2,14 +2,16 @@ import redis
 from ...lib.platforms.platform_helper import PlatformHelper
 from .tool_maker import ToolMaker, ToolConfig
 from ..integrations.auth.oauth_handler import OAuthClient
-from langchain_core.tools import Tool, tool
+from langchain_core.tools import BaseTool, tool
 from sqlalchemy.orm import Session
+
 
 class GoogleOauthConfig(ToolConfig):
     ...
 
 class GoogleOauthToolMaker(ToolMaker):
     REQUESTED_OAUTH_INTEGRATIONS = ["google"]
+    DESCRIPTION = """The ToolMaker is used to initiate the OAuth flow, allowing the user to connect their Google account securely for calendar, drive, or other integrations."""
 
     def __init__(
         self, 
@@ -23,7 +25,7 @@ class GoogleOauthToolMaker(ToolMaker):
         self.oauth_integrations = oauth_integrations
         self.platform_helper = platform_helper
 
-    def create_ai_tools(self) -> list[Tool]:
+    def create_ai_tools(self) -> list[BaseTool]:
         @tool
         def create_oauth_link():
             """

@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   postgres:
-    image: postgres
+    image: pgvector/pgvector:pg17
     environment:
       POSTGRES_PASSWORD: password
     network_mode: host
@@ -14,6 +14,45 @@ services:
     network_mode: host
     volumes:
       - redisdata:/data
+
+  gotenberg:
+    image: gotenberg/gotenberg:latest
+    network_mode: host
+
+  api:
+    build:
+      context: .
+    network_mode: host
+    command: >
+      /bin/bash -c "
+      alembic upgrade head &&
+      uvicorn src.api:app --reload
+      "
+
+  bot:
+    build:
+      context: .
+    network_mode: host
+    user: "1000:1000"
+    command: >
+      /bin/bash -c "
+      python -m src.slack_bot
+      "
+
+  celery_worker:
+    build:
+      context: .
+    network_mode: host
+    user: "1000:1000"
+    environment:
+      - C_FORCE_ROOT=true
+      - XDG_CACHE_HOME=/tmp/.cache
+      - DBUS_SESSION_BUS_ADDRESS=disabled
+    command: >
+      /bin/bash -c "
+      mkdir -p /tmp/.cache &&
+      celery -A src.lib.tasks worker --loglevel=info
+      "
 
 volumes:
   pgdata:
